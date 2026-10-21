@@ -330,11 +330,13 @@ test('标题后没有正文 WARN', () => {
   assert.match(r.out, /标题后没有正文/);
 });
 
-test('单日超 20000 字符 WARN', () => {
+test('单日再长也不报超长 WARN（2026-10-22 取消该检查）', () => {
   const big = 'x'.repeat(20050);
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** —— ${big}\n` });
   const r = run(ws);
-  assert.match(r.out, /超过建议的 20,000/);
+  assert.equal(r.code, 0);
+  assert.doesNotMatch(r.out, /20,000|超过建议/);
+  assert.match(r.out, /1 条/);
 });
 
 test('日期标题与文件名不一致 FAIL', () => {
