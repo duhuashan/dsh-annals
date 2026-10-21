@@ -104,11 +104,14 @@ dsh plugin --profile web remove dsh-worklog
 ## 测试
 
 ```powershell
-node --test test/offline.mjs   # 32 个离线用例（mock 服务）
+node --test test/offline.mjs            # 32 个离线用例（mock 服务）
+node --test test/build-index.test.mjs   # 29 个生成器端到端用例（真实临时目录 + 真实子进程）
 node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模拟 fs-sandbox 拒绝默认策略、验证初始化全部写入成功、再跑生成器
 ```
 
 离线用例覆盖状态三态、初始化幂等、引导注入、提醒触发/跳过、索引新鲜度（不存在/陈旧/已最新/开关关闭/「不用记」）、工具两个分支、沙箱策略解析与透传、Config schema 形状。全部 mock 服务，不需要 DSH 宿主。
+
+生成器用例覆盖：代码围栏屏蔽（含未闭合）、编号写法不规范（全角数字/顿号/缺空格）的 FAIL、编号重复/倒序/跳号的文案、BOM 剥离、日期不存在、非 UTF-8 WARN、同名目录与只读文件的友好报错、只有坏名文件时的原因、概览加粗变体、日期标题前导空格、行尾 `\r\r\n` 收敛、幂等，以及 A/B 两种脚本位置。
 
 ## 已知边界
 
@@ -118,7 +121,7 @@ node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模�
 - **工作区级状态**。同一工作区多个会话共享一个状态文件；不同工作区互不影响。
 - **工作区若自带同名技能会覆盖插件版**。DSH 的技能优先级是「工作区 `.dsh\skills`（rank 100）> 插件运行时注册（rank 250）」，所以某个工作区里放了 `.dsh\skills\worklog\SKILL.md` 时，模型用的是它而不是包内的 `assets/worklog.md`。想让插件版当唯一来源，就别在工作区放同名副本。
 - **初始化写入按会话沙箱策略解析**。插件直调 `ctx.fs.writeText` 时传 `sandboxPolicy.resolve({session})` 的策略；省略的话 fs-sandbox 后端会退回默认 workspace-write + 进程 cwd，在「打开的其他目录工作区」里初始化会被拒（`file access denied under workspace-write mode`）。已实测并修复。
-- **初始化不在工作区根创建文件**。只写 `日志\` 与 `.dsh\log-system.json`。生成器 `build-index.mjs` 用**脚本自身位置**当锚点：只认 `<工作区>\日志\build-index.mjs`（也兼容放在工作区根），被挪到别处会明确报错退出，不会把索引写到某个碰巧有 `日志\` 的目录。生成物是 `_日志索引.md`。
+- **初始化不在工作区根创建文件**。只写 `日志\` 与 `.dsh\log-system.json`。生成器 `build-index.mjs` 用**脚本自身位置**当锚点：只认 `<工作区>\日志\build-index.mjs`（也兼容放在工作区根），被挪到别处会明确报错退出，不会把索引写到某个碰巧有 `日志\` 的目录。生成物是 `_日志索引.md`。**注意**：位置校验的实际判据是「自己所在目录」或「自己的 `日志\` 子目录」里有 `.md` 文件 —— 若把脚本复制到一个同时也有 `日志\` 子目录的无关路径下，它会把那里当成独立工作区正常生成。后者在语义上是合法的（子目录确实可以是另一个工作区），所以只加了一条「祖先目录下也有 `日志\`」的 WARN 提示，不阻断。
 - **初始化里的 `git init` 同样按会话沙箱策略执行**。`ctx.shell.resolve` 不传 `sandboxPolicy` 时，dsh-pwsh-sandbox 会退回默认 workspace-write 并尝试 ACL 沙箱；本机 ACL 后端初始化失败（`windows-acl-run: AclSandbox init failed`），`git init` 被拒。修复：`runShell` 把同一个会话策略传给 `shell.resolve`。
 - **技能注册必须带 `source`**。`ctx.skills.register()` 的 `validateRuntimeSkill` 不查 source，但 skill 工具加载时 `skills.get()` 会 `validateDefinition`，缺 source 抛 `loaded skill "worklog" source must be a string`。已补 `source: 'dsh-worklog'`。
 - **GUI 开关页来自 client 半**。插件在 `package.json` 声明 `dsh.client.platform: "web"` 并导出 `./client`，宿主把它编进浏览器入口图（`/plugins` 路由，`window.__DSH_BOOT__` 里能看到 `dsh-worklog` 条目）。非 web profile 没有这一页，只能改 `cordis.patch.yml`。
