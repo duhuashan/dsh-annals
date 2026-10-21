@@ -1,0 +1,16 @@
+# 行尾统一规则。
+#
+# 日志正文用 CRLF —— 用户 2026-10-20 定的规矩。
+# 代码用 LF —— 跨平台工具链对 LF 更友好，且 build-index.mjs 自己会读日志，
+#   两种混在一个仓库里没必要。
+#
+# 写在 gitattributes 里而不是只靠 core.autocrlf：这台机器的 core.autocrlf=true
+# 来自 system 层（不是仓库自己的设置），换个环境就没了。gitattributes 跟着仓库走。
+#
+# 注意：git 只在 add/checkout 时按这里规范化，改不了工作区里已经存在的文件。
+# 真正保证工作区文件是 CRLF 的是 build-index.mjs —— 它每次运行都会修正。
+
+*.md   text eol=crlf
+*.mjs  text eol=lf
+# .gitattributes 自己也需要一条，否则它自己会被当成 text 用平台默认行尾
+.gitattributes text eol=lf

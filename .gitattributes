@@ -1,0 +1,17 @@
+# 这个仓库里的源码统一 LF。
+#
+# 这台机器的 core.autocrlf=true 来自 system 层（不是仓库自己的设置），
+# 别的机器上未必是。写进 gitattributes 才跟着仓库走：
+# 否则 Windows 上 clone 下来得到 CRLF 的 .js/.mjs/package.json，
+# 而本机开发时它们是 LF —— 每次提交都会冒出满屏的「整文件改动」。
+#
+# 注意这与插件资产 assets/gitattributes 是两回事：
+# 那一份是给用户工作区的 日志\ 仓库用的（日志正文 CRLF、脚本 LF），
+# 这一份只约束 dsh-worklog 自己的源码。
+
+* text=auto eol=lf
+*.md  text eol=lf
+*.mjs text eol=lf
+*.js  text eol=lf
+*.json text eol=lf
+*.yml text eol=lf

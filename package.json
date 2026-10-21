@@ -1,0 +1,49 @@
+{
+  "name": "dsh-worklog",
+  "version": "0.1.1",
+  "type": "module",
+  "description": "日志系统：注册 worklog 技能、常驻注入日志规矩、轮次收尾提醒补写、一次初始化（日志目录 + 索引生成器 + git）。",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/duhuashan/dsh-worklog.git"
+  },
+  "homepage": "https://github.com/duhuashan/dsh-worklog#readme",
+  "bugs": {
+    "url": "https://github.com/duhuashan/dsh-worklog/issues"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.0"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "keywords": [
+    "dsh",
+    "worklog",
+    "logging",
+    "journal"
+  ],
+  "license": "MIT"
+}
