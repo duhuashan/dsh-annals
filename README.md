@@ -1,6 +1,10 @@
 # dsh-worklog
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 把「每天一个日志文件 + 自动索引 + git 版本记录」装进一条命令：技能、规矩、提醒、初始化一次给齐。
+
+> DSH（DeepSeek Harness）插件 | 版本 0.1.1 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
 
 ## 解决什么问题
 
@@ -71,21 +75,19 @@
 
 GUI 保存立即生效；改 `cordis.patch.yml` 后需重启 DSH。
 
-**依赖**：唯一运行时依赖是 `@deepseek-ai/schemastery`（只用于配置 schema）。从 npm 安装时随包自动装；本机 `link:` 安装不会装依赖，需在插件目录备好 `node_modules/@deepseek-ai/schemastery`（本机做法：junction 到 `~/.dsh/profiles/web/node_modules/@deepseek-ai/schemastery`）。
+**依赖**：唯一运行时依赖是 `@deepseek-ai/schemastery`（只用于配置 schema）。从 tarball / npm 安装时 pnpm 会随包自动装；`link:` 安装不会装依赖，需在插件目录备好 `node_modules/@deepseek-ai/schemastery`。
 
 ## 安装
 
+从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载 `dsh-worklog-0.1.1.tgz`，然后：
+
 ```powershell
-dsh plugin --profile web add dsh-worklog
+dsh plugin --profile web add C:\path\to\dsh-worklog-0.1.1.tgz
 ```
 
-从 tarball 或本机源码目录安装：
+开发时也可以从源码目录链进去（依赖不会自动装，需自备 `schemastery`）：
 
 ```powershell
-# 用 release 里的 tgz
-dsh plugin --profile web add C:\path\to\dsh-worklog-0.1.1.tgz
-
-# 开发时直接链本机目录（依赖不会自动装，需自备 schemastery）
 dsh plugin --profile web add link:C:/path/to/dsh-worklog
 ```
 
