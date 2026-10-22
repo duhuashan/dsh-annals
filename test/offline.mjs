@@ -28,6 +28,9 @@ import {
   stripHereString,
   snapshotLogStamp,
   logChangedSince,
+  isInsideWorkspace,
+  snapshotWorkspaceStamp,
+  workspaceChangedSince,
 } from '../lib/index.js';
 
 // ---------------------------------------------------------------------------
@@ -507,6 +510,9 @@ test('提醒：改过文件且没写日志 → steer 一次，同轮不重复', 
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 真的落盘：轮尾以工作区快照为准，只发 tool/call 不写文件会被正确判成「没改」。
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'a.js'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) } });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
@@ -528,6 +534,7 @@ test('错过 agent/created 的会话：turn/start 补判状态后仍能提醒', 
   // 模拟会话恢复 / 插件热重载后继续旧会话：不触发 agent/created。
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
   await tick(); // 等补判的 classifyWorkspace 完成
+  writeFileSync(join(root, 'x.js'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'write', arguments: JSON.stringify({ file_path: 'x.js' }) } });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
@@ -789,6 +796,7 @@ test('worklog_init(enabled=true)：初始化并让本会话可提醒', async (t)
   assert.ok(existsSync(join(root, '日志', 'build-index.mjs')));
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  writeFileSync(join(root, 'a.txt'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'write', arguments: '{"file_path":"a.txt"}' } });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
@@ -960,6 +968,9 @@ test('官方清单说改了、但没写日志 → 照样提醒', async (t) => {
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 官方清单说改了，磁盘上也得真改 —— 工作区快照优先于官方清单。
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'a.js'), 'x\n', 'utf8');
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
   assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
@@ -1053,12 +1064,13 @@ test('官方服务没有本轮事件 → 不采信，退回关键词判定', asy
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  writeFileSync(join(root, 'a.txt'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
-  // 采信不了官方清单时，write 工具照样算改过，提醒照发
+  // 官方清单采信不了，但工作区快照看得见真改动 → 提醒照发
   assert.equal(agent.steers.length, 1);
 });
 
@@ -1259,6 +1271,7 @@ test('只读过日志、没写 → 仍然催写', async (t) => {
     type: 'tool/call',
     data: { name: 'pwsh', arguments: JSON.stringify({ command: `Get-Content 日志\\${localDate()}.md` }) },
   });
+  writeFileSync(join(root, 'src-a.js'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
@@ -1295,4 +1308,159 @@ test('写了又还原：git 里看不出、mtime 变了，仍判成写过', asyn
   for (const steer of agent.steers) {
     assert.doesNotMatch(steer.content[0].text, /还没有写今天的日志/);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 工作区快照：不再猜命令行，直接比对轮首 / 轮尾的文件时间戳
+// 背景：判断「这一轮改没改文件」原本靠命令串里的关键词，误报源一个接一个
+// （`form` 里的 `rm `、`2>&1`、here-string 正文、`D:\Temp` 探针……）。
+// 改成拍两张快照对比后，一次同时抓住改动 / 新建 / 删除。
+// ---------------------------------------------------------------------------
+
+test('isInsideWorkspace：路径判定，判不了的一律当成在里面', () => {
+  const root = join('D:', 'AI', 'workspace-probe');
+
+  // 区内
+  assert.equal(isInsideWorkspace(root, join(root, '日志', 'x.md')), true);
+  assert.equal(isInsideWorkspace(root, root), true);
+  assert.equal(isInsideWorkspace(root, join('日志', 'x.md')), true, '相对路径按 cwd 展开');
+
+  // 区外
+  assert.equal(isInsideWorkspace(root, join('D:', 'Temp', 'x.mjs')), false);
+  assert.equal(isInsideWorkspace(root, `${root}b\\x.md`), false, '同前缀的兄弟目录不算在里面');
+  assert.equal(isInsideWorkspace(root, join(root, '..', 'other', 'x.md')), false, '.. 绕出去不算');
+  assert.equal(isInsideWorkspace(root, join('E:', 'x.md')), false, '跨盘不算');
+  assert.equal(
+    isInsideWorkspace(root, join('C:', 'Users', 'brilliant', '.dsh', 'local-plugins', 'dsh-worklog', 'lib', 'index.js')),
+    false,
+    '改插件本体不算改工作区',
+  );
+
+  // 判不了 → 当成在里面（宁可多报，不要漏报）
+  assert.equal(isInsideWorkspace(undefined, join('D:', 'Temp', 'x.mjs')), true, '拿不到 cwd');
+  assert.equal(isInsideWorkspace(root, ''), true, '没有路径');
+  assert.equal(isInsideWorkspace(root, undefined), true, '路径不是字符串');
+});
+
+test('snapshotWorkspaceStamp / workspaceChangedSince：改 / 建 / 删都抓得到', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, '日志'), { recursive: true });
+  writeFileSync(join(root, '日志', 'a.md'), 'a\n', 'utf8');
+
+  const before = snapshotWorkspaceStamp(root);
+  assert.ok(before instanceof Map, '应返回 Map');
+  assert.ok(before.size > 0, '应扫到文件');
+  assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), false, '一字未动');
+
+  // 改内容
+  writeFileSync(join(root, '日志', 'a.md'), 'ab\n', 'utf8');
+  assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), true, '改内容');
+
+  // 新建
+  const afterModify = snapshotWorkspaceStamp(root);
+  writeFileSync(join(root, 'new.md'), 'x\n', 'utf8');
+  assert.equal(workspaceChangedSince(afterModify, snapshotWorkspaceStamp(root)), true, '新建文件');
+
+  // 删除
+  const afterCreate = snapshotWorkspaceStamp(root);
+  rmSync(join(root, 'new.md'));
+  assert.equal(workspaceChangedSince(afterCreate, snapshotWorkspaceStamp(root)), true, '删文件');
+
+  // 边界
+  assert.equal(workspaceChangedSince(undefined, before), undefined, '轮首没拍到 → 判不了');
+  assert.equal(workspaceChangedSince(before, undefined), undefined, '轮尾拍不到 → 判不了');
+  assert.equal(snapshotWorkspaceStamp(''), undefined, '没有 cwd → 拍不了');
+});
+
+test('snapshotWorkspaceStamp：跳过 .git（否则 git status 自己就会让快照变脏）', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, '.git', 'objects'), { recursive: true });
+  writeFileSync(join(root, '.git', 'index'), 'idx\n', 'utf8');
+  writeFileSync(join(root, 'a.md'), 'a\n', 'utf8');
+
+  const before = snapshotWorkspaceStamp(root);
+  // 只动 .git 里的东西 —— 真实的 git 命令（status / add）就是这样
+  writeFileSync(join(root, '.git', 'index'), 'idx2\n', 'utf8');
+  assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), false, '.git 内变化不算改工作区');
+});
+
+test('只发 tool/call 不落盘：不再被当成改过文件', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 声称写了工作区里的文件，但磁盘上一个字节都没动（比如工具被沙箱拒绝、路径写错）
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  // 快照说没改 → 不催
+  assert.equal(agent.steers.length, 0);
+});
+
+test('只往工作区外写：命令看着像在写，也不算改本工作区', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 工作区外真写了一个文件 —— 快照只看工作区，所以看不见
+  const outside = join(tmpdir(), `worklog-outside-${process.pid}.txt`);
+  writeFileSync(outside, 'x\n', 'utf8');
+  t.after(() => rmSync(outside, { force: true }));
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: `Set-Content ${outside} x` }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: outside }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 0);
+});
+
+test('命令行改了工作区里的文件（关键词认不出的写法）→ 快照照样抓到', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 这条命令整串里一个写关键词都没有，旧逻辑判成「没写」；快照能看见文件真的变了
+  writeFileSync(join(root, 'artifact.bin'), 'x\n', 'utf8');
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'node -e "require(\'fs\').writeFileSync(\'artifact.bin\',\'x\')"' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
 });
