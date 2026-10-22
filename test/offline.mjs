@@ -22,6 +22,9 @@ import {
   initWorkspace,
   readFlag,
   isIndexStale,
+  looksLikeShellWrite,
+  onlyTouchesTemp,
+  stripQuoted,
 } from '../lib/index.js';
 
 // ---------------------------------------------------------------------------
@@ -98,9 +101,11 @@ function makeShell() {
 
 /**
  * @param {string} root - 工作区根。
+ * @param {object} [options] - 额外挂载的服务。
+ * @param {object} [options.workspaceChanges] - 模拟官方改动清单服务。
  * @returns {any} mock 上下文。
  */
-function makeCtx(root) {
+function makeCtx(root, options = {}) {
   const handlers = new Map();
   const registered = { skills: [], sections: [], tools: [] };
   const ctx = {
@@ -126,6 +131,7 @@ function makeCtx(root) {
           }),
         };
       }
+      if (name === 'workspaceChanges') return options.workspaceChanges;
       return undefined;
     },
     skills: { register(skill) { registered.skills.push(skill); return () => {}; } },
@@ -754,4 +760,307 @@ test('worklog_init 没有 live agent 时报错', async (t) => {
   apply(ctx, {});
   const tool = ctx.registered.tools[0];
   await assert.rejects(() => tool.execute({ enabled: true }, {}), /live agent/);
+});
+
+// ---------------------------------------------------------------------------
+// shell 命令判定：误报回归
+// ---------------------------------------------------------------------------
+
+test('looksLikeShellWrite：只读命令不再误报', () => {
+  // 真机误报现场：`form ` 里字面包含子串 `rm `
+  assert.equal(looksLikeShellWrite('echo "==== form 枚举定义 ===="'), false);
+  assert.equal(looksLikeShellWrite("Select-String -Pattern 'rm ' 日志\\2026-10-22.md"), false);
+  assert.equal(looksLikeShellWrite('Get-Content 日志/2026-10-22.md'), false);
+  assert.equal(looksLikeShellWrite('git status'), false);
+  assert.equal(looksLikeShellWrite('git log --oneline'), false);
+  // `cp`/`mv` 出现在别的词里
+  assert.equal(looksLikeShellWrite('Get-Command copy-item'), false);
+  assert.equal(looksLikeShellWrite('echo "mvp"'), false);
+  assert.equal(looksLikeShellWrite(''), false);
+  assert.equal(looksLikeShellWrite(undefined), false);
+});
+
+test('looksLikeShellWrite：真正的写命令仍判为改', () => {
+  assert.equal(looksLikeShellWrite('rm D:\\AI\\deepseek2\\a.txt'), true);
+  assert.equal(looksLikeShellWrite('Get-Content x | rm y'), true);
+  assert.equal(looksLikeShellWrite('cd /tmp; rm a.txt'), true);
+  assert.equal(looksLikeShellWrite('mkdir 日志'), true);
+  assert.equal(looksLikeShellWrite('Set-Content 日志/2026-10-22.md hi'), true);
+  assert.equal(looksLikeShellWrite('git commit -m "x"'), true);
+  assert.equal(looksLikeShellWrite('git rm --cached x'), true);
+  assert.equal(looksLikeShellWrite('echo hi > out.txt'), true);
+});
+
+test('onlyTouchesTemp：临时目录里的改动不算工作区', () => {
+  // 真机误报现场：往 $env:TEMP 里建探针目录
+  assert.equal(onlyTouchesTemp('New-Item $env:TEMP\\wl-probe -ItemType Directory'), true);
+  assert.equal(onlyTouchesTemp('Remove-Item $env:TEMP\\wl-probe -Recurse'), true);
+  assert.equal(onlyTouchesTemp('Copy-Item a.txt /tmp/b.txt'), true);
+  assert.equal(onlyTouchesTemp('echo hi > %TEMP%\\x.txt'), true);
+  // 混进工作区路径就不豁免
+  assert.equal(onlyTouchesTemp('Copy-Item $env:TEMP\\a D:\\AI\\deepseek2\\b'), false);
+  assert.equal(onlyTouchesTemp('Set-Content D:\\AI\\deepseek2\\x.txt hi'), false);
+  // 本工作区自己的 Temp\ 不豁免 —— 插件不认任何具体工作区的目录习惯
+  assert.equal(onlyTouchesTemp('New-Item D:\\AI\\deepseek2\\Temp\\probe -ItemType Directory'), false);
+});
+
+test('onlyTouchesTemp：认 os.tmpdir() 现算的真实临时根', () => {
+  const root = tmpdir();
+  // 动态取值：换机器 / 改 TEMP 也自动跟随，不写死任何路径
+  assert.equal(onlyTouchesTemp(`New-Item ${root}\\probe -ItemType Directory`), true);
+  assert.equal(onlyTouchesTemp(`Remove-Item ${root}\\probe -Recurse`), true);
+  assert.equal(looksLikeShellWrite(`New-Item ${root}\\probe`), false);
+  // 前缀相似但不是临时目录：D:\Tempest 不能因为 D:\Temp 而豁免
+  assert.equal(onlyTouchesTemp(`${root}est\\probe`), false);
+  // 临时目录 + 工作区混着写，照样不豁免
+  assert.equal(onlyTouchesTemp(`Copy-Item ${root}\\a D:\\AI\\deepseek2\\b`), false);
+  assert.equal(looksLikeShellWrite(`Copy-Item ${root}\\a D:\\AI\\deepseek2\\b`), true);
+});
+
+test('looksLikeShellWrite：临时目录豁免串起来生效', () => {
+  assert.equal(looksLikeShellWrite('New-Item $env:TEMP\\wl-probe -ItemType Directory'), false);
+  assert.equal(looksLikeShellWrite('Remove-Item $env:TEMP\\wl-probe -Recurse'), false);
+  // 同一类命令指向工作区，照样算
+  assert.equal(looksLikeShellWrite('New-Item D:\\AI\\deepseek2\\Temp\\probe'), true);
+});
+
+test('误报回归：只读轮次不再触发补写日志提醒', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 这两条都是当时真机上被判成「改过文件」的只读命令
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'echo "==== form 枚举定义 ===="' }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'New-Item $env:TEMP\\wl-probe -ItemType Directory' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 0);
+});
+
+test('官方清单说没改 → 盖过关键词误报', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // 关键词会判成「改了」，但官方清单是空的
+  const ctx = makeCtx(root, {
+    workspaceChanges: { summary: () => ({ total: 0, files: [] }) },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [{ type: 'workspace/changes', seq: 42, data: { turn: 1 } }],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'git commit -m x' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 0);
+});
+
+test('官方清单说改了、但没写日志 → 照样提醒', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root, {
+    workspaceChanges: { summary: () => ({ total: 1, files: [{ path: 'src/a.js' }] }) },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [{ type: 'workspace/changes', seq: 42, data: { turn: 1 } }],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
+test('官方清单里有今天的日志 → 不催写日志', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root, {
+    workspaceChanges: {
+      summary: () => ({ total: 1, files: [{ path: `日志\\${localDate()}.md` }] }),
+    },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [{ type: 'workspace/changes', seq: 42, data: { turn: 1 } }],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  // 日志写了、索引没跑 → 只有索引提醒
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /_日志索引\.md/);
+});
+
+test('官方清单看不见 shell 写的日志 → 关键词说写过就别催写日志', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // 本轮改了源码（官方看得见），日志是用 shell 写的（官方看不见）。
+  // 修复前：官方清单无条件覆盖 wroteLog → 判成「没写日志」→ 误催。
+  const ctx = makeCtx(root, {
+    workspaceChanges: { summary: () => ({ total: 1, files: [{ path: 'src/a.js' }] }) },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [{ type: 'workspace/changes', seq: 42, data: { turn: 1 } }],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: {
+      name: 'pwsh',
+      arguments: JSON.stringify({ command: `Set-Content 日志\\${localDate()}.md 'x'` }),
+    },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  // 不催写日志；索引还没跑，所以只剩索引提醒
+  for (const steer of agent.steers) {
+    assert.doesNotMatch(steer.content[0].text, /还没有写今天的日志/);
+  }
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /_日志索引\.md/);
+});
+
+test('官方服务没有本轮事件 → 不采信，退回关键词判定', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root, {
+    // 服务在，但 summary 永远不会被问到（没有事件拿不到 seq）
+    workspaceChanges: { summary: () => ({ total: 0, files: [] }) },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  // 采信不了官方清单时，write 工具照样算改过，提醒照发
+  assert.equal(agent.steers.length, 1);
+});
+
+// ---- `>` 重定向：把「有 > 就算写」收紧成「真的引向文件才算 ----
+// 背景：`/>\s*\S/` 把 `2>&1`（几乎每条带 `| Select-Object -Last N` 的命令都有）
+// 判成写文件，导致几乎每轮误报。第 36/37/38 条日志记了现场。
+
+test('stripQuoted：引号内容被清空', () => {
+  assert.equal(stripQuoted("Select-String -Pattern 'a>b'"), "Select-String -Pattern ''");
+  assert.equal(stripQuoted('Select-String -Pattern "a>b"'), 'Select-String -Pattern ""');
+  assert.equal(stripQuoted('echo hi > out.txt'), 'echo hi > out.txt');
+  assert.equal(stripQuoted("node -e \"console.log('->')\""), 'node -e ""');
+});
+
+test('looksLikeShellWrite：合流错误与箭头不算写文件', () => {
+  // 这四条是全插件里最容易每轮撞上的误报源
+  assert.equal(looksLikeShellWrite('node --test test\\offline.mjs 2>&1 | Select-Object -Last 8'), false);
+  assert.equal(looksLikeShellWrite('cmd 2>&1 | Out-Null'), false);
+  assert.equal(looksLikeShellWrite('node build.mjs > $null'), false);
+  assert.equal(looksLikeShellWrite('node build.mjs 2>$null'), false);
+  assert.equal(looksLikeShellWrite('node build.mjs 2>nul'), false);
+  assert.equal(looksLikeShellWrite('node build.mjs 2>NUL'), false);
+  // 箭头函数 / 比较运算符
+  assert.equal(looksLikeShellWrite(`node -e "console.log(t, '->', new Date(t))"`), false);
+  assert.equal(looksLikeShellWrite('node -e "const f=(x)=>x"'), false);
+  assert.equal(looksLikeShellWrite("Select-String -Pattern 'a>b'"), false);
+  assert.equal(looksLikeShellWrite('Select-String -Pattern "a>b"'), false);
+  assert.equal(looksLikeShellWrite('if ($a -gt $b) { }'), false);
+  // 引号里写着完整命令，仍按字面判（已知局限，多报方向）
+  assert.equal(looksLikeShellWrite('echo "==== form 枚举定义 ===="'), false);
+});
+
+test('looksLikeShellWrite：真重定向仍然判改', () => {
+  // 无空格的写法实测 PowerShell 也真写文件（`echo hi>f.txt` 会生成 f.txt）
+  assert.equal(looksLikeShellWrite('echo hi > out.txt'), true);
+  assert.equal(looksLikeShellWrite('echo hi>out.txt'), true);
+  assert.equal(looksLikeShellWrite('echo hi >> out.txt'), true);
+  assert.equal(looksLikeShellWrite('node gen.mjs > 日志\\x.md'), true);
+  assert.equal(looksLikeShellWrite('node gen.mjs >日志\\x.md'), true);
+  // 既是流编号、又是真重定向：合流之后另有一个 `>`
+  assert.equal(looksLikeShellWrite('node build.mjs 2>&1 > log.txt'), true);
+  assert.equal(looksLikeShellWrite('Get-Content x > out\\y.txt'), true);
+  // 目标是临时目录时不判改 —— 这是另一条规则（onlyTouchesTemp）在起作用
+  assert.equal(looksLikeShellWrite('Get-Content x > D:\\Temp\\y.txt'), false);
+});
+
+test('误报回归：带 2>&1 的只读轮次不再触发补写日志提醒', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 真机上连续 4 次触发误报的写法
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'node --test test\\offline.mjs 2>&1 | Select-Object -Last 8' }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: `node -e "console.log(t, '->')" 2>&1` }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 0);
 });
