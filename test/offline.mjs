@@ -25,6 +25,7 @@ import {
   looksLikeShellWrite,
   onlyTouchesTemp,
   stripQuoted,
+  stripHereString,
 } from '../lib/index.js';
 
 // ---------------------------------------------------------------------------
@@ -1060,6 +1061,79 @@ test('误报回归：带 2>&1 的只读轮次不再触发补写日志提醒', as
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: { name: 'pwsh', arguments: JSON.stringify({ command: `node -e "console.log(t, '->')" 2>&1` }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 0);
+});
+
+test('stripHereString：here-string 正文被清空，外面的命令一字不动', () => {
+  // 单引号 here-string（字面量）
+  assert.equal(
+    stripHereString("cd D:\\Temp\n@'\nNew-Item D:\\x\n'@ | Set-Content v.mjs"),
+    "cd D:\\Temp\n@''@ | Set-Content v.mjs",
+  );
+  // 双引号 here-string（会展开 $，但同样不执行其中的「命令」）
+  assert.equal(
+    stripHereString('@"\nRemove-Item D:\\x\n"@ | Out-File v.ps1'),
+    '@""@ | Out-File v.ps1',
+  );
+  // 没有 here-string 时原样返回
+  assert.equal(stripHereString('rm a.txt'), 'rm a.txt');
+});
+
+test('looksLikeShellWrite：here-string 里的关键词是数据，不是命令', () => {
+  // turn 20 真机误报的原型：正文里全是关键词字面词，实际只往临时目录写脚本
+  const probe = [
+    'cd D:\\Temp',
+    "@'",
+    "const cases = [['New-Item D:\\\\Temp\\\\probe', false]];",
+    '// 上面这句是在测 Remove-Item、Set-Content',
+    "'@ | Set-Content -Path v.mjs -Encoding utf8",
+  ].join('\n');
+  assert.equal(looksLikeShellWrite(probe), false);
+
+  // 真写在工作区，且写在 here-string 外面 —— 仍然判改
+  assert.equal(
+    looksLikeShellWrite("@'\n只是一段说明文字\n'@ | Set-Content D:\\AI\\deepseek2\\out.txt"),
+    true,
+  );
+  // 引号里的真命令不受影响（不能简单剥引号，这正是当初没剥的原因）
+  assert.equal(looksLikeShellWrite('pwsh -Command "Remove-Item D:\\AI\\deepseek2\\a.txt"'), true);
+});
+
+test('onlyTouchesTemp：临时根后面跟换行或空格时仍然豁免', () => {
+  const root = tmpdir();
+  // 旧版只认 `\`、`/` 和结尾，换行与空格都漏 —— turn 20 十条误判的主因
+  assert.equal(onlyTouchesTemp(`${root}\nnext`), true);
+  assert.equal(onlyTouchesTemp(`${root} `), true);
+  assert.equal(onlyTouchesTemp(`${root}\\sub`), true);
+  assert.equal(onlyTouchesTemp(`${root}`), true);
+  // 形近目录不该被当临时目录
+  assert.equal(looksLikeShellWrite(`New-Item ${root}est\\x`), true);
+});
+
+test('误报回归：here-string 里满是指令词的只读轮次不再触发提醒', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  const probe = [
+    'cd D:\\Temp',
+    "@'",
+    "const cases = [['New-Item D:\\\\Temp\\\\probe', false], ['rm D:\\\\AI\\\\deepseek2\\\\a.txt', true]];",
+    "'@ | Set-Content -Path v.mjs -Encoding utf8",
+  ].join('\n');
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: probe }) },
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 0);
