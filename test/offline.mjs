@@ -703,6 +703,33 @@ test('索引提醒：粘性跨轮保留，下一轮仍会提醒', async (t) => {
   assert.equal(agent.steers.length, 2);
 });
 
+test('索引提醒：靠 mtime 认定写过日志时，粘性同样跨轮保留', async (t) => {
+  const { root, today, ctx } = makeIndexFixture();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const logFile = join(root, '日志', `${today}.md`);
+
+  const session = { header: {} };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 用 shell 的路子写（命令串里没有任何写关键词），只有 mtime 能看出来
+  writeFileSync(logFile, `# ${today}\n\n1. **标题** —— 正文\n`, 'utf8');
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'node 日志\\build-index.mjs' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /_日志索引\.md/);
+
+  // 第二轮什么都没干 —— 索引还停在旧快照，粘性标记没被清，还得提醒
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 2 } });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 2 });
+  assert.equal(agent.steers.length, 2);
+});
+
 test('索引提醒：reminder 关掉时两条提醒都不发', async (t) => {
   const { root, today, ctx } = makeIndexFixture({ reminder: false });
   t.after(() => rmSync(root, { recursive: true, force: true }));
