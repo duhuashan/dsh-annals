@@ -26,6 +26,8 @@ import {
   onlyTouchesTemp,
   stripQuoted,
   stripHereString,
+  snapshotLogStamp,
+  logChangedSince,
 } from '../lib/index.js';
 
 // ---------------------------------------------------------------------------
@@ -386,6 +388,39 @@ test('apply 总开关 enabled=false 时技能、规矩、工具都不注册', (t
   assert.equal(ctx.registered.skills.length, 0);
   assert.equal(ctx.registered.sections.length, 0);
   assert.equal(ctx.registered.tools.length, 0);
+});
+
+test('snapshotLogStamp / logChangedSince：只认时间戳与大小', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const date = '2026-10-21';
+  mkdirSync(join(root, '日志'), { recursive: true });
+  const logFile = join(root, '日志', `${date}.md`);
+
+  // 文件不存在 → null（区别于 undefined：那是「轮首没取到快照，无法判定」）
+  assert.equal(snapshotLogStamp(root, date), null);
+  assert.equal(logChangedSince(undefined, null), undefined);
+
+  writeFileSync(logFile, '# x\n', 'utf8');
+  const before = snapshotLogStamp(root, date);
+  assert.equal(typeof before.mtimeMs, 'number');
+  assert.equal(before.size, 4);
+
+  // 同一份东西再拍一次 → 没变
+  assert.equal(logChangedSince(before, snapshotLogStamp(root, date)), false);
+
+  // 读文件不改 mtime —— 这条是整个方案成立的前提
+  readFileSync(logFile, 'utf8');
+  assert.equal(logChangedSince(before, snapshotLogStamp(root, date)), false);
+
+  // 写入 → 变
+  utimesSync(logFile, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+  assert.equal(logChangedSince(before, snapshotLogStamp(root, date)), true);
+
+  // 轮首有、轮尾没有（被删）→ 也算动过
+  assert.equal(logChangedSince(before, null), true);
+  // 轮首没有、轮尾有（新建）→ 也算动过
+  assert.equal(logChangedSince(null, { mtimeMs: 1, size: 1 }), true);
 });
 
 test('isIndexStale：只按 mtime 判定索引新鲜度', (t) => {
@@ -930,7 +965,7 @@ test('官方清单里有今天的日志 → 不催写日志', async (t) => {
   assert.match(agent.steers[0].content[0].text, /_日志索引\.md/);
 });
 
-test('官方清单看不见 shell 写的日志 → 关键词说写过就别催写日志', async (t) => {
+test('官方清单看不见 shell 写的日志 → 靠 mtime 认出来，别催写', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   // 本轮改了源码（官方看得见），日志是用 shell 写的（官方看不见）。
@@ -940,6 +975,7 @@ test('官方清单看不见 shell 写的日志 → 关键词说写过就别催�
   });
   await initWorkspace(ctx, root);
   apply(ctx, {});
+  const logFile = join(root, '日志', `${localDate()}.md`);
 
   const session = {
     id: 'session-offline',
@@ -951,11 +987,13 @@ test('官方清单看不见 shell 写的日志 → 关键词说写过就别催�
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 真写（mtime 变），命令串里一个写关键词都没有 —— 正是 `.NET WriteAllText` 的形状
+  writeFileSync(logFile, '# x\n\n1. **标题** —— 正文\n', 'utf8');
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: {
       name: 'pwsh',
-      arguments: JSON.stringify({ command: `Set-Content 日志\\${localDate()}.md 'x'` }),
+      arguments: JSON.stringify({ command: `[System.IO.File]::WriteAllText('日志\\${localDate()}.md', $t)` }),
     },
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
@@ -1137,4 +1175,97 @@ test('误报回归：here-string 里满是指令词的只读轮次不再触发�
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 0);
+});
+
+// ---- 「日志写没写」改问文件时间戳，不再猜命令串 ----
+// 背景：命令串永远猜不准 —— `Set-Content` 认得、`[System.IO.File]::WriteAllText`
+// 不认得；`日志\x.md` 认得、转义成 `日志\\x.md` 不认得。第 47 条日志记了这次转向。
+
+test('写日志用关键词认不出的写法，靠 mtime 也能认出来', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const logFile = join(root, '日志', `${localDate()}.md`);
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 真机上就是这么写的：.NET 静态调用，SHELL_WRITE_HINTS 里一个字都没有
+  writeFileSync(logFile, '# x\n\n1. **标题** —— 正文\n', 'utf8');
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'Select-String -Path 日志\\*.md -Pattern x' }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  for (const steer of agent.steers) {
+    assert.doesNotMatch(steer.content[0].text, /还没有写今天的日志/);
+  }
+});
+
+test('只读过日志、没写 → 仍然催写', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const logFile = join(root, '日志', `${localDate()}.md`);
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 命令串里明明有「日志\YYYY-MM-DD.md」，但它只是 Get-Content 的入参
+  readFileSync(logFile, 'utf8');
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: `Get-Content 日志\\${localDate()}.md` }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
+test('写了又还原：git 里看不出、mtime 变了，仍判成写过', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const logFile = join(root, '日志', `${localDate()}.md`);
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  const original = readFileSync(logFile, 'utf8');
+  writeFileSync(logFile, `${original}临时探针\n`, 'utf8');
+  writeFileSync(logFile, original, 'utf8'); // 内容还原，逐字节一致
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  for (const steer of agent.steers) {
+    assert.doesNotMatch(steer.content[0].text, /还没有写今天的日志/);
+  }
 });

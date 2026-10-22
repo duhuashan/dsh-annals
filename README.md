@@ -104,7 +104,7 @@ dsh plugin --profile web remove dsh-worklog
 ## 测试
 
 ```powershell
-node --test test/offline.mjs            # 32 个离线用例（mock 服务）
+node --test test/offline.mjs            # 55 个离线用例（mock 服务）
 node --test test/build-index.test.mjs   # 29 个生成器端到端用例（真实临时目录 + 真实子进程）
 node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模拟 fs-sandbox 拒绝默认策略、验证初始化全部写入成功、再跑生成器
 ```
@@ -117,6 +117,8 @@ node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模�
 
 - **不自动写日志，也不自动跑生成器**。只提醒，该不该记、记什么、什么时候跑 `build-index.mjs`，仍由模型判断和执行。插件不替模型写文件，好处是「谁写的」永远可追溯。
 - **索引新鲜度靠 mtime 判定，同秒可能漏报**。判据是「今天日志的 mtime > `_日志索引.md` 的 mtime」，同秒写入时不成立。NTFS 精度到 100ns，实际几乎不会撞上；改成 `<=` 会误报「刚跑完生成器但没改日志」的情形，不值得。
+- **「日志写没写」也靠 mtime，不认命令写法**。轮首（`turn/start`）给今天的日志文件拍一次 `{mtimeMs, size}` 快照，轮尾再拍一次，变了就算写过。好处是写法无关：`Set-Content`、`[System.IO.File]::WriteAllText`、`>>`、Node 的 `appendFileSync` 一视同仁；且能抓住「写了又还原」（内容一致但 mtime 变了）。代价是**判据是「动过」而非「动了内容」** —— 用编辑器打开再原样保存也算。另有一条副作用是想要的行为：读取日志不改 mtime，所以「命令里提到日志路径但只是 `Get-Content`」不会被误判成写过。
+- **「改没改文件」仍靠两路证据叠加**。文件工具（`write`/`edit`）走结构化参数，看得准；命令行走关键词判定，永远有猜的成分（`echo "==== form 枚举定义 ===="` 里的 `form` 曾含 `rm `，`2>&1` 里的 `>` 曾被当成重定向）。官方 `workspaceChanges` 服务有本轮事件时以它为准，没有时退回关键词。**在非 git 工作区，官方服务只看得见文件工具改的东西，shell 写的一律看不见**（`dsh-workspace-changes` README 自述），所以「没有事件」不等于「没有改动」。
 - **不扫历史**。不读已完成会话，不生成摘要。
 - **工作区级状态**。同一工作区多个会话共享一个状态文件；不同工作区互不影响。
 - **工作区若自带同名技能会覆盖插件版**。DSH 的技能优先级是「工作区 `.dsh\skills`（rank 100）> 插件运行时注册（rank 250）」，所以某个工作区里放了 `.dsh\skills\worklog\SKILL.md` 时，模型用的是它而不是包内的 `assets/worklog.md`。想让插件版当唯一来源，就别在工作区放同名副本。
