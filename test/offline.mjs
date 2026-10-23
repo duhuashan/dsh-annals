@@ -1003,6 +1003,35 @@ test('官方清单里有今天的日志 → 不催写日志', async (t) => {
   assert.match(agent.steers[0].content[0].text, /_日志索引\.md/);
 });
 
+test('改动落在工作区外、官方清单看得见 → 照样提醒（issue #1 回归）', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  // 工作区里一个文件都没动（快照会说 false），改动在桌面。
+  // 修复前：快照拿到就全信快照 → changed=false → 官方看得见也永远轮不到 → 从不提醒。
+  const ctx = makeCtx(root, {
+    workspaceChanges: {
+      summary: () => ({ total: 1, files: [{ path: 'C:\\Users\\someone\\Desktop\\报告.md' }] }),
+    },
+  });
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = {
+    id: 'session-offline',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [{ type: 'workspace/changes', seq: 42, data: { turn: 1 } }],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 工作区内什么都不写 —— 这是关键，快照必然判 false
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
 test('官方清单看不见 shell 写的日志 → 靠 mtime 认出来，别催写', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
