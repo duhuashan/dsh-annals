@@ -590,6 +590,68 @@ test('提醒：用户说「不用记」就跳过', async (t) => {
   assert.equal(agent.steers.length, 0);
 });
 
+/**
+ * 说一句话、真落盘一个工作区内文件，跑完一轮，返回收到的 steer 条数。
+ * 必须真写文件：轮尾以工作区快照为准，只发 tool/call 会被正确判成「没改」。
+ * @param {string} userText 用户原话
+ * @returns {Promise<number>} steer 条数
+ */
+async function steerCountAfterSaying(t, userText) {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: {} };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: userText }] },
+  });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'a.js'), 'x\n', 'utf8');
+  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) } });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  return agent.steers.length;
+}
+
+test('提醒：用户说「这轮不记日志」就跳过', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '这轮不记日志'), 0);
+});
+
+test('提醒：用户说「这次不写日志」就跳过', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '这次不写日志'), 0);
+});
+
+test('提醒：用户说「别碰日志」就跳过', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '别碰日志'), 0);
+});
+
+test('提醒：用户说「这个别动了」就跳过', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '这个别动了'), 0);
+});
+
+test('提醒：用户说「不要忘记写日志」仍然提醒', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '不要忘记写日志'), 1);
+});
+
+test('提醒：用户说「别动不动就改我代码」仍然提醒', async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '别动不动就改我代码'), 1);
+});
+
+test('提醒：局部否定当整轮是已知缺陷', { skip: '正则分不清「别记录这个错误」里否定的是「这个错误」还是整轮日志' }, async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '别记录这个错误，改用记忆里的方案'), 1);
+});
+
+test('提醒：否定词不是记/写/碰/动时仍提醒', { skip: '「更」不在字符类里，宁可漏压不可误压' }, async (t) => {
+  assert.equal(await steerCountAfterSaying(t, '别更新记录，等会儿再说'), 1);
+});
+
 test('提醒：子代理会话跳过', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
