@@ -4,7 +4,7 @@
 
 把「每天一个日志文件 + 自动索引 + git 版本记录」装进一条命令：技能、规矩、提醒、初始化一次给齐。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.1.3 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.1.4 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
 
 ## 解决什么问题
 
@@ -79,10 +79,10 @@ GUI 保存立即生效；改 `cordis.patch.yml` 后需重启 DSH。
 
 ## 安装
 
-从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载 `dsh-worklog-0.1.3.tgz`，然后：
+从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载 `dsh-worklog-0.1.4.tgz`，然后：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-worklog-0.1.3.tgz
+dsh plugin --profile web add C:\path\to\dsh-worklog-0.1.4.tgz
 ```
 
 开发时也可以从源码目录链进去（依赖不会自动装，需自备 `schemastery`）：
@@ -104,7 +104,7 @@ dsh plugin --profile web remove dsh-worklog
 ## 测试
 
 ```powershell
-node --test test/offline.mjs            # 62 个离线用例（mock 服务）
+node --test test/offline.mjs            # 63 个离线用例（mock 服务）
 node --test test/build-index.test.mjs   # 29 个生成器端到端用例（真实临时目录 + 真实子进程）
 node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模拟 fs-sandbox 拒绝默认策略、验证初始化全部写入成功、再跑生成器
 ```
