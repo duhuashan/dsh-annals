@@ -1674,3 +1674,81 @@ test('点名路径没变、其他证据也没有 → 不催（这一路不制造
 
   assert.equal(agent.steers.length, 0);
 });
+
+test('宿主自己在持续写的目录不进点名集合', () => {
+  // 这些路径的共同点：DSH 自己每一步都在写，命令里点到它们不代表「我要写」。
+  // 会话记录是最要命的一条 —— 解压它取证的那一轮，必然被判「改过文件」。
+  const volatile = [
+    'C:\\Users\\brilliant\\.dsh\\sessions\\--D-AI-deepseek2--\\session.v4.jsonl.zstd',
+    'C:\\Users\\brilliant\\.dsh\\logs\\startup-2026-10-17.log',
+    'C:\\Users\\brilliant\\.dsh\\storages\\session-projection.json',
+    'C:\\Users\\brilliant\\.dsh\\attachments\\v1\\files\\ab\\abc.png',
+  ];
+  for (const path of volatile) {
+    assert.deepEqual(collectShellPaths(`Get-Content '${path}'`), [], path + ' 不该被点名');
+  }
+
+  // 宽到没有信息量的目标：变了也说不清是谁动的。
+  const broad = ['C:', 'D:', 'C:\\', homedir(), join(homedir(), '.dsh')];
+  for (const path of broad) {
+    assert.deepEqual(collectShellPaths(`Get-ChildItem '${path}'`), [], path + ' 不该被点名');
+  }
+
+  // 目录本身也算：`.dsh\sessions` 这层在会话增删时 mtime 会跳，
+  // 盯它同样归不了因（实测 session-clean 删过一条会话，父目录 mtime 就变了）。
+  for (const dir of [
+    join(homedir(), '.dsh', 'sessions'),
+    join(homedir(), '.dsh', 'logs'),
+    join(homedir(), '.dsh', 'storages'),
+    join(homedir(), '.dsh', 'attachments'),
+  ]) {
+    assert.deepEqual(collectShellPaths(`Get-ChildItem '${dir}'`), [], dir + ' 目录本身也不该被点名');
+  }
+
+  // 反向护栏：这次收紧不能把 f1d99d1 要覆盖的东西一起收掉。
+  const outside = join(homedir(), `.worklog-pathstamp-scope-${process.pid}.txt`);
+  assert.deepEqual(
+    collectShellPaths(`node -e "require('fs').writeFileSync('${outside}','x')"`),
+    [outside],
+    '工作区外的具体文件仍要点名 —— 这是补盲区的唯一入口',
+  );
+  assert.deepEqual(
+    collectShellPaths(`Get-Content 'C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-worklog\\lib\\index.js'`),
+    ['C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-worklog\\lib\\index.js'],
+    '插件自己的源码不是宿主持续写的路径，不能顺手排除',
+  );
+});
+
+test('只读过会话记录、文件被别处追加 → 不催（这一路不制造误报）', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  // 造一个落在 `.dsh\sessions\` 下的文件，形态与真实会话记录一致。
+  // 不用真的会话目录：测试不该碰用户正在用的那一份。
+  const sessionsDir = join(homedir(), '.dsh', 'sessions');
+  mkdirSync(sessionsDir, { recursive: true });
+  const workDir = mkdtempSync(join(sessionsDir, 'dsh-worklog-test-'));
+  t.after(() => rmSync(workDir, { recursive: true, force: true }));
+  const transcript = join(workDir, 'session.v4.jsonl.zstd');
+  writeFileSync(transcript, 'AAAA', 'utf8');
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 只读它：`Get-Content` 一个写关键词都没有。
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: `Get-Content '${transcript}'` }) },
+  });
+  // 但 DSH 自己在这期间又追加了一段 —— 文件确实变了，只是不是我改的。
+  writeFileSync(transcript, 'AAAAaaaa', 'utf8');
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 0, '宿主自己写的文件不该被算成「我改了工作区」');
+});
