@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync, utimesSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 
 import {
@@ -31,6 +31,9 @@ import {
   isInsideWorkspace,
   snapshotWorkspaceStamp,
   workspaceChangedSince,
+  collectShellPaths,
+  snapshotPathStamps,
+  pathStampsChangedSince,
 } from '../lib/index.js';
 
 // ---------------------------------------------------------------------------
@@ -1439,7 +1442,7 @@ test('只发 tool/call 不落盘：不再被当成改过文件', async (t) => {
   assert.equal(agent.steers.length, 0);
 });
 
-test('只往工作区外写：命令看着像在写，也不算改本工作区', async (t) => {
+test('只往临时目录写：命令看着像在写，也不算改', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
@@ -1492,4 +1495,182 @@ test('命令行改了工作区里的文件（关键词认不出的写法）→ �
 
   assert.equal(agent.steers.length, 1);
   assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
+// ---------------------------------------------------------------------------
+// 点名路径 stat 比对（工作区外 shell 写的客观判据）
+// ---------------------------------------------------------------------------
+
+test('collectShellPaths：抽出命令里的绝对路径', () => {
+  assert.deepEqual(
+    collectShellPaths('Set-Content -Path D:\\AI\\out.txt -Value x'),
+    ['D:\\AI\\out.txt'],
+  );
+  assert.deepEqual(
+    collectShellPaths('copy D:\\a.txt D:\\b.txt'),
+    ['D:\\a.txt', 'D:\\b.txt'],
+  );
+  // 尾巴上粘的分隔符不算路径的一部分
+  assert.deepEqual(
+    collectShellPaths('Set-Content D:\\AI\\out.txt; Get-Date'),
+    ['D:\\AI\\out.txt'],
+  );
+});
+
+test('collectShellPaths：没有绝对路径就是空的（脚本类命令走不了这条路）', () => {
+  assert.deepEqual(collectShellPaths('git commit -m "fix"'), []);
+  assert.deepEqual(collectShellPaths('npm install'), []);
+  // `python gen.py` 的目标路径在脚本内部，命令串里没有 —— 这正是这一路抓不住的形态
+  assert.deepEqual(collectShellPaths('python gen.py'), []);
+  assert.deepEqual(collectShellPaths(''), []);
+  assert.deepEqual(collectShellPaths(undefined), []);
+});
+
+test('collectShellPaths：临时目录、盘符根、重复项都不盯', () => {
+  // 临时目录里的写入本来就不算改工作区，盯它只是白 stat
+  assert.deepEqual(collectShellPaths('Remove-Item D:\\Temp\\x.txt'), []);
+  assert.deepEqual(collectShellPaths('New-Item $env:TEMP\\probe -ItemType Directory'), []);
+  // 盘符根不是具体目标，盯它等于盯整块盘
+  assert.deepEqual(collectShellPaths('dir C:\\'), []);
+  // 大小写不同是同一个文件
+  assert.deepEqual(
+    collectShellPaths('Copy-Item D:\\AI\\A.txt D:\\ai\\a.txt'),
+    ['D:\\AI\\A.txt'],
+  );
+});
+
+test('collectShellPaths：here-string 正文里的路径不算命令操作数', () => {
+  // 正文是要写进文件的内容；只有末尾 Set-Content 的目标是真操作数
+  const command = "@'\nD:\\AI\\deepseek2\\inner.md\n'@ | Set-Content D:\\AI\\out.txt";
+  assert.deepEqual(collectShellPaths(command), ['D:\\AI\\out.txt']);
+});
+
+test('collectShellPaths：路径数量有上限，不会退化成批量扫描', () => {
+  const many = Array.from({ length: 100 }, (_, i) => `D:\\AI\\f${i}.txt`).join(' ');
+  assert.equal(collectShellPaths(`copy ${many}`).length, 32);
+});
+
+test('snapshotPathStamps：存在的记时间戳，不存在的记 absent', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const present = join(root, 'present.txt');
+  const absent = join(root, 'absent.txt');
+  writeFileSync(present, 'x\n', 'utf8');
+
+  const stamps = snapshotPathStamps([present, absent]);
+  assert.match(stamps.get(present), /^\d+(?:\.\d+)?:\d+$/);
+  // 现在没有不代表一直不会有 —— 记成 absent 才能抓到「新建」
+  assert.equal(stamps.get(absent), 'absent');
+  // 没有路径就没有基准
+  assert.equal(snapshotPathStamps([]), undefined);
+  assert.equal(snapshotPathStamps(undefined), undefined);
+});
+
+test('pathStampsChangedSince：任一侧缺失就判不了', () => {
+  const map = new Map([['D:\\a.txt', '1:1']]);
+  assert.equal(pathStampsChangedSince(undefined, map), undefined);
+  assert.equal(pathStampsChangedSince(map, undefined), undefined);
+  // 判不了 ≠ 没改。调用方只能拿 true 当证据
+  assert.equal(pathStampsChangedSince(new Map(), new Map()), undefined);
+});
+
+test('pathStampsChangedSince：改了 / 新建 / 删除都算变', () => {
+  const before = new Map([['D:\\a.txt', '1:1'], ['D:\\gone.txt', '2:2'], ['D:\\new.txt', 'absent']]);
+  const after = new Map([['D:\\a.txt', '9:9'], ['D:\\new.txt', '3:3']]);
+  assert.equal(pathStampsChangedSince(before, after), true);
+  // 同一组、同一份戳 → 没变
+  assert.equal(pathStampsChangedSince(before, new Map(before)), false);
+});
+
+test('工作区外的 shell 写（关键词认不出的写法）→ 点名路径抓到并提醒', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  // 故意选一个**不在临时目录**的工作区外路径：临时路径会被豁免掉，
+  // 而交付物默认落在桌面、用户目录这些地方，正是要覆盖的形态。
+  const outside = join(homedir(), `.worklog-pathstamp-${process.pid}.txt`);
+  t.after(() => rmSync(outside, { force: true }));
+  rmSync(outside, { force: true });
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 这条命令里没有 Set-Content、没有 rm/mv/cp、没有重定向 ——
+  // 关键词三层全落空，旧代码直接 return，一个字节的证据都不取。
+  // 但命令串里写着一个具体的绝对路径，stat 它就有客观结论。
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: {
+      name: 'pwsh',
+      arguments: JSON.stringify({ command: `node -e "require('fs').writeFileSync('${outside}','x')"` }),
+    },
+  });
+  // 命令真的执行了：文件从不存在变成存在
+  writeFileSync(outside, 'x\n', 'utf8');
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 1, '工作区外的写入也算改过文件，该提醒');
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
+test('同一路径被两条命令先后点到：第二次不覆盖轮首基准', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  const outside = join(homedir(), `.worklog-pathstamp-twice-${process.pid}.txt`);
+  t.after(() => rmSync(outside, { force: true }));
+  rmSync(outside, { force: true });
+
+  const command = `node -e "require('fs').writeFileSync('${outside}','x')"`;
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'pwsh', arguments: JSON.stringify({ command }) } });
+  writeFileSync(outside, 'x\n', 'utf8');
+  // 第二条命令又点到同一个路径 —— 此刻文件已存在。
+  // 若这里重拍基准，就和轮尾那张一模一样了，改动会被抹掉。
+  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'pwsh', arguments: JSON.stringify({ command }) } });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 1, '首条命令的改动不能被第二条命令的基准覆盖掉');
+});
+
+test('点名路径没变、其他证据也没有 → 不催（这一路不制造误报）', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  // 一个真实存在且全程没动过的文件
+  const outside = join(homedir(), `.worklog-pathstamp-still-${process.pid}.txt`);
+  t.after(() => rmSync(outside, { force: true }));
+  writeFileSync(outside, 'x\n', 'utf8');
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 只读它，不写：`Get-Content` 一个写关键词都没有，路径也确实没变
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: `Get-Content ${outside}` }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 0);
 });
