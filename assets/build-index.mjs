@@ -654,7 +654,10 @@ for (const month of months) {
   out.push('');
   for (const date of byMonth.get(month)) {
     for (const e of byDate.get(date)) {
-      out.push(`- ${date.slice(5)}  ${e.title} · 日志\\${e.file}:${e.line}`);
+      // 锚点用「文件 + 第 N 条」，不用行号。
+      // 行号会因为前面插/删空行而整体漂移，而它漂的时候不报错 —— 静默指错。
+      // 条目编号只在「拆条/合并」时才会漂，那是内容变化，本来就该被看见。
+      out.push(`- ${date.slice(5)}  ${e.title} · 日志\\${e.file} 第 ${e.num} 条`);
     }
   }
   out.push('');

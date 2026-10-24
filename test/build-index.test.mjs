@@ -125,7 +125,7 @@ test('正常两条：索引 2 条、exit 0', () => {
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
   assert.equal(entryCount(r.index), 2);
-  assert.match(r.index, /甲 · 日志\\2026-10-22\.md:3/);
+  assert.match(r.index, /甲 · 日志\\2026-10-22\.md 第 1 条/);
 });
 
 test('子项是合法的（正文段之后的缩进 - ）', () => {
