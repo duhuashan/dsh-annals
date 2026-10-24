@@ -65,9 +65,15 @@ function entryCount(index) {
 
 // 一条合规条目：条目行 + 空行 + 正文段 + （有子项时空行 + 子项）。
 // 缩进 = 编号位数 + 2（`1. ` → 3 空格，`10. ` → 4 空格）。
+// 2026-10-25 起条目必带 `[time=]`：这里默认注入一个按**调用顺序**递增的合法时刻，
+// 于是「编号倒序」这类用例不会顺带撞上「时刻倒退」。要测缺字段/形状/倒退，
+// 直接在 title 里自带 `[time=…]`（以 `[` 开头就不再注入）。
+let seq = 0;
 function e(num, title, body, ...items) {
   const pad = ' '.repeat(String(num).length + 2);
-  const block = [`${num}. ${title}`, '', `${pad}正文：${body}`];
+  const head = title.startsWith('[') ? title : `[time=00:00:${String(seq % 60).padStart(2, '0')}] ${title}`;
+  seq++;
+  const block = [`${num}. ${head}`, '', `${pad}正文：${body}`];
   if (items.length) {
     block.push('');
     for (const it of items) block.push(`${pad}- ${it}`);
@@ -76,8 +82,11 @@ function e(num, title, body, ...items) {
 }
 
 // 一整个日志文件：日期标题 + 若干条目（之间正好一个空行）。
+// 结尾把 seq 归零，让每个用例的第一个条目都从 00:00:00 起。
 function log(...blocks) {
-  return `# ${DAY}\n\n${blocks.join('\n\n')}\n`;
+  const s = `# ${DAY}\n\n${blocks.join('\n\n')}\n`;
+  seq = 0;
+  return s;
 }
 
 // 一份「最小合法日志」：一条
@@ -98,7 +107,9 @@ function fenceIn(num, code, lang = '') {
 // 一条带围栏子项的条目：条目行 + 空行 + 正文段 + 空行 + 子项行 + 围栏块（紧邻）
 function eFence(num, title, body, code, lang = '') {
   const pad = ' '.repeat(String(num).length + 2);
-  return [`${num}. ${title}`, '', `${pad}正文：${body}`, '', `${pad}- 示例：`, fenceIn(num, code, lang)].join('\n');
+  const head = title.startsWith('[') ? title : `[time=00:00:${String(seq % 60).padStart(2, '0')}] ${title}`;
+  seq++;
+  return [`${num}. ${head}`, '', `${pad}正文：${body}`, '', `${pad}- 示例：`, fenceIn(num, code, lang)].join('\n');
 }
 
 const results = [];
@@ -154,6 +165,58 @@ test('条目行可带方括号字段', () => {
   assert.match(r.index, /甲 · 日志/);
 });
 
+// ── 写入时刻（2026-10-25 起必填）─────────────────────────────
+
+test('索引行带写入时刻：照抄字段，不截到分', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。')) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.index, /- 10-22 00:00:00  甲 · 日志\\2026-10-22\.md 第 1 条/);
+});
+
+test('缺写入时刻 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **丙**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /第 1 条缺写入时刻/);
+});
+
+test('写入时刻形状非法 FAIL（未补零 / 超出 24 小时）', () => {
+  for (const bad of ['9:05:00', '25:00:00', '09:05', '09:05:61', '090500']) {
+    const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=${bad}] **丙**\n\n   正文：正文。\n` });
+    const r = run(ws);
+    assert.equal(r.code, 1, `${bad} 应 FAIL`);
+    assert.match(r.out, /写入时刻「/, `${bad} 应报形状错`);
+  }
+});
+
+test('同日写入时刻倒退 FAIL', () => {
+  const ws = caseWs({
+    [`${DAY}.md`]: log(e(1, '[time=09:00:00] **甲**', '一。'), e(2, '[time=08:00:00] **乙**', '二。')),
+  });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /第 2 条的写入时刻 08:00:00 早于上一条的 09:00:00/);
+});
+
+test('跨零点的往回走合法（10-20 写到次日 00:07 是常事）', () => {
+  const ws = caseWs({
+    [`${DAY}.md`]: log(e(1, '[time=23:56:16] **甲**', '一。'), e(2, '[time=00:07:33] **乙**', '二。')),
+  });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(entryCount(r.index), 2);
+});
+
+test('同一秒写多条是合法的（一批日志如实同秒）', () => {
+  const ws = caseWs({
+    [`${DAY}.md`]: log(e(1, '[time=09:00:00] **甲**', '一。'), e(2, '[time=09:00:00] **乙**', '二。')),
+  });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(entryCount(r.index), 2);
+});
+
 test('无子项的条目也合法（正文段后直接下一条）', () => {
   const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '一。'), e(2, '**乙**', '二。')) });
   const r = run(ws);
@@ -187,7 +250,7 @@ test('代码围栏里缩进加粗的示例不误报 FAIL', () => {
 test('代码围栏没闭合会报 WARN', () => {
   // 故意只开不闭：围栏之后的条目全被吞
   const pad = ' '.repeat(5);
-  const broken = `1. **甲**\n\n${' '.repeat(3)}正文：正文。\n\n${' '.repeat(3)}- 子项：\n\n${pad}\`\`\`\n${pad}2. **乙** —— 被吞。`;
+  const broken = `1. [time=00:00:00] **甲**\n\n${' '.repeat(3)}正文：正文。\n\n${' '.repeat(3)}- 子项：\n\n${pad}\`\`\`\n${pad}2. [time=00:00:01] **乙** —— 被吞。`;
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n${broken}\n` });
   const r = run(ws);
   assert.match(r.out, /代码围栏没有闭合/);
@@ -196,7 +259,7 @@ test('代码围栏没闭合会报 WARN', () => {
 
 test('围栏缩进不是 W+2 会 FAIL', () => {
   // 编号 1 位 → 围栏该缩进 5 空格，这里给 3 空格
-  const bad = `1. **甲**\n\n   正文：正文。\n\n   - 子项：\n\n   \`\`\`\n   code\n   \`\`\``;
+  const bad = `1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n   - 子项：\n\n   \`\`\`\n   code\n   \`\`\``;
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n${bad}\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
@@ -238,7 +301,7 @@ test('顿号 1、**甲** 会 FAIL', () => {
 });
 
 test('正文还写在标题行上（旧写法）FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** —— 正文还在这一行。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲** —— 正文还在这一行。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /正文还写在标题行上/);
@@ -246,7 +309,7 @@ test('正文还写在标题行上（旧写法）FAIL', () => {
 });
 
 test('条目行标题后面还有内容 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** 多余的尾巴\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲** 多余的尾巴\n\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /标题后面还有内容/);
@@ -267,7 +330,7 @@ test('未加粗的条目 FAIL', () => {
 });
 
 test('缩进加粗的条目 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。'), `   2. **乙**`) });
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。'), `   2. [time=00:00:01] **乙**`) });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缩进的条目加了粗/);
@@ -276,21 +339,21 @@ test('缩进加粗的条目 FAIL', () => {
 // ── 正文段规则 ──────────────────────────────────────────────
 
 test('缺正文段 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /没有正文段/);
 });
 
 test('正文段是空的 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /正文段是空的/);
 });
 
 test('两个正文段 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：一。\n\n   正文：二。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：一。\n\n   正文：二。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /有第二个正文段/);
@@ -300,7 +363,7 @@ test('正文段缩进不对 FAIL（两位编号用 3 空格）', () => {
   const blocks = [];
   for (let i = 1; i <= 9; i++) blocks.push(e(i, `**第 ${i} 条**`, `正文 ${i}。`));
   // 第 10 条是两位编号，正文段该缩进 4 空格，这里故意给 3
-  blocks.push(`10. **第十条**\n\n   正文：缩进错了。`);
+  blocks.push(`10. [time=00:00:02] **第十条**\n\n   正文：缩进错了。`);
   const ws = caseWs({ [`${DAY}.md`]: log(...blocks) });
   // 默认入口会先把它修好，所以这里用 --no-fix 看校验器的判定
   const r = run(ws, { argv: ['--no-fix'] });
@@ -309,14 +372,14 @@ test('正文段缩进不对 FAIL（两位编号用 3 空格）', () => {
 });
 
 test('子项出现在正文段之前 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   - 先有子项。\n\n   正文：后补的。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   - 先有子项。\n\n   正文：后补的。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /先出现子项、后补正文/);
 });
 
 test('子项缩进不对 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /子项缩进 5 空格，应为 3 空格/);
@@ -347,21 +410,21 @@ test('--explain 报出每行的行类型归属，且退出码 0', () => {
 // ── 空行规则 ────────────────────────────────────────────────
 
 test('连续空行 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n\n2. **乙**\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n\n2. [time=00:00:01] **乙**\n\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /连续空行/);
 });
 
 test('文件开头有空行 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `\n# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `\n# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /文件开头的空行/);
 });
 
 test('文件末尾有空行 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /文件末尾的空行/);
@@ -370,7 +433,7 @@ test('文件末尾有空行 FAIL', () => {
 test('空行位置不对 FAIL（正文段与子项之间塞了空行后又空一行）', () => {
   // item → item 不是合法的空行位置
   const ws = caseWs({
-    [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n   - 一。\n\n   - 二。\n`,
+    [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n   - 一。\n\n   - 二。\n`,
   });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
@@ -378,7 +441,7 @@ test('空行位置不对 FAIL（正文段与子项之间塞了空行后又空一
 });
 
 test('空行里带空格 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n \n1. **甲**\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n \n1. [time=00:00:00] **甲**\n\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /空白行里带了空格或制表符/);
@@ -389,28 +452,28 @@ test('空行里带空格 FAIL', () => {
 // 这四条补的是反向检查：该有的空行必须有。
 
 test('缺空行 FAIL：条目行紧接正文段', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（entry → body/);
 });
 
 test('缺空行 FAIL：正文段紧接子项', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n   - 子项\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n   - 子项\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（body → item/);
 });
 
 test('缺空行 FAIL：日期标题紧接第 1 条', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n1. **甲**\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（date → entry/);
 });
 
 test('缺空行 FAIL：最后一个子项紧接下一条', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n   - 子项\n2. **乙**\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n   - 子项\n2. [time=00:00:01] **乙**\n\n   正文：正文。\n` });
   const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（item → entry/);
@@ -525,7 +588,7 @@ test('日期标题带前导空格不报 FAIL', () => {
 });
 
 test('日期标题与文件名不一致 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: '# 2026-10-23\n\n1. **甲**\n\n   正文：正文。\n' });
+  const ws = caseWs({ [`${DAY}.md`]: '# 2026-10-23\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n' });
   const r = run(ws);
   assert.equal(r.code, 1);
   assert.match(r.out, /不一致/);
@@ -535,7 +598,7 @@ test('日期标题与文件名不一致 FAIL', () => {
 // 日期标题变成纯装饰物 —— 写错了没人知道，写对了也没有任何作用。
 test('文件中间出现第二个日期标题 FAIL', () => {
   const ws = caseWs({
-    [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n# 2026-10-23\n\n2. **乙**\n\n   正文：正文。\n`,
+    [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n# 2026-10-23\n\n2. [time=00:00:01] **乙**\n\n   正文：正文。\n`,
   });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
@@ -543,7 +606,7 @@ test('文件中间出现第二个日期标题 FAIL', () => {
 });
 
 test('空标题 FAIL：只有空白也算空', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **   **\n\n   正文：正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [time=00:00:00] **   **\n\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /标题是空的/);
@@ -553,7 +616,7 @@ test('空标题 FAIL：只有空白也算空', () => {
 });
 
 test('2026-13-45.md 会 FAIL', () => {
-  const ws = caseWs({ '2026-13-45.md': '# 2026-13-45\n\n1. **甲**\n\n   正文：正文。\n' });
+  const ws = caseWs({ '2026-13-45.md': '# 2026-13-45\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n' });
   const r = run(ws);
   assert.equal(r.code, 1);
   assert.match(r.out, /日期不存在/);
@@ -586,7 +649,7 @@ test('非 UTF-8 字节会 WARN', () => {
 test('\\r\\r\\n 被收敛成 CRLF', () => {
   const ws = makeWs({});
   results.push(ws.root);
-  const body = `# ${DAY}\r\r\n\r\r\n1. **甲**\r\r\n\r\r\n   正文：正文。\r\r\n`;
+  const body = `# ${DAY}\r\r\n\r\r\n1. [time=00:00:00] **甲**\r\r\n\r\r\n   正文：正文。\r\r\n`;
   writeFileSync(join(ws.logDir, `${DAY}.md`), body);
   copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
   const r = run(ws);
@@ -651,7 +714,7 @@ test('脚本放工作区根（B 情形）也能工作', () => {
 // 只在修复器真的写盘并修好时成立：文件内容变了、报告说了改了什么、退出码 0。
 test('默认入口：子项缩进能被修好，且报告说清改了哪几行', () => {
   const path = `${DAY}.md`;
-  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
   const before = readFileSync(join(ws.logDir, path), 'utf8');
   const r = run(ws);
   const after = readFileSync(join(ws.logDir, path), 'utf8');
@@ -668,20 +731,20 @@ test('默认入口：子项缩进能被修好，且报告说清改了哪几行',
 
 test('默认入口：缺的空行会被补上，补完通过', () => {
   const path = `${DAY}.md`;
-  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲**\n   正文：正文。\n` });
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. [time=00:00:00] **甲**\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /补上 \d+ 个缺失的空行/);
   const after = readFileSync(join(ws.logDir, path), 'utf8');
   // 条目行与正文段之间确实多了空行
-  assert.match(after, /1\. \*\*甲\*\*\r?\n\r?\n {3}正文：/);
+  assert.match(after, /1\. \[time=00:00:00\] \*\*甲\*\*\r?\n\r?\n {3}正文：/);
 });
 
 test('默认入口：多余空行与首尾空行会被删掉，删完通过', () => {
   const path = `${DAY}.md`;
   // 首部 2 个空行、末尾 3 个空行、中间夹 2 个空行（该留一个）
   const ws = caseWs({
-    [path]: `\n\n# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n\n2. **乙**\n\n   正文：正文。\n\n\n\n`,
+    [path]: `\n\n# ${DAY}\n\n1. [time=00:00:00] **甲**\n\n   正文：正文。\n\n\n2. [time=00:00:01] **乙**\n\n   正文：正文。\n\n\n\n`,
   });
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
@@ -697,7 +760,7 @@ test('默认入口：多余空行与首尾空行会被删掉，删完通过', ()
 
 test('默认入口：答案不唯一的错不修，仍然 FAIL', () => {
   const path = `${DAY}.md`;
-  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲** —— 正文还挂在标题行上。\n\n   正文：正文。\n` });
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. [time=00:00:00] **甲** —— 正文还挂在标题行上。\n\n   正文：正文。\n` });
   const before = readFileSync(join(ws.logDir, path), 'utf8');
   const r = run(ws);
   const after = readFileSync(join(ws.logDir, path), 'utf8');
@@ -737,7 +800,7 @@ test('默认入口幂等：跑第二遍连行尾都不动', () => {
 // --no-fix 的意义就在这里：同一份脏文件，默认入口修好了，--no-fix 必须原样留着。
 test('--no-fix 不修：脏文件一个字节都不改，且退出码 1', () => {
   const path = `${DAY}.md`;
-  const dirty = `# ${DAY}\n\n1. **甲**\n   正文：正文。\n\n     - 缩进多了。\n`;
+  const dirty = `# ${DAY}\n\n1. [time=00:00:00] **甲**\n   正文：正文。\n\n     - 缩进多了。\n`;
   const ws = caseWs({ [path]: dirty });
   const r = run(ws, { argv: ['--no-fix'] });
   const after = readFileSync(join(ws.logDir, path), 'utf8');

@@ -1,6 +1,6 @@
 {
   "name": "dsh-worklog",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "type": "module",
   "description": "日志系统：注册 worklog 技能、常驻注入日志规矩、轮次收尾提醒补写、一次初始化（日志目录 + 索引生成器 + git）。",
   "exports": {

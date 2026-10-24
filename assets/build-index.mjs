@@ -86,6 +86,14 @@ if (!EXPLAIN) {
 // 标题行上，导致「标题」和「正文」在同一行里没有各自的位置。现在正文必须独立成段
 // （body 行），词法上就不可能再黏回去。
 const ENTRY = /^(\d+)\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*(.+?)\*\*\s*$/;
+// 写入时刻：2026-10-25 起必填，永远第一个字段。只认零填充的 `HH:MM:SS` ——
+// 不做「9:05」这类宽松解析：生成器补不了真实时刻，所以宁可 FAIL 让人重取一次，
+// 也不要吞进一个半懂的值。日期不进字段（文件名已经给了，写两处就是两个真源）。
+const TIME_FIELD = /\[time=([^\]]*)\]/;
+const TIME_SHAPE = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+/** 把合法形状的 HH:MM:SS 换算成秒，只为判断「往回走了多少」。 */
+const secOf = (t) =>
+  Number(t.slice(0, 2)) * 3600 + Number(t.slice(3, 5)) * 60 + Number(t.slice(6, 8));
 // 日期标题：容忍行首空白（有人从别处复制会带前导空格）。
 const DATE_TITLE = /^\s*#\s+(\d{4}-\d{2}-\d{2})\s*$/;
 // 「看起来像条目但写法不对」：全角数字、全角句点、顿号、以及 `1.**`（缺空格）。
@@ -424,6 +432,7 @@ for (const file of files) {
   // 每个元素：{ kind, i, ... }。kindCount 顺便累计，供报告输出。
   const kinds = new Array(tailIdx).fill('unclassified');
   let lastNum = 0;
+  let prevTime = null; // 同日单调的锚点：上一条合法的写入时刻
   let lastEntryLine = -1;
   let inFence = false;
   let fenceStart = -1;
@@ -496,6 +505,29 @@ for (const file of files) {
     if (hit) {
       const num = Number(hit[1]);
       const w = hit[1].length + 2;
+      // 写入时刻：必填、形状固定、同日不许倒退。这三条是机器能判的部分；
+      // 判不了的（这个时间是不是真的）不在生成器的职责里 —— 它只保证
+      // 「有、长得对、顺序自洽」，真假靠写的人当场取值。
+      const tm = TIME_FIELD.exec(hit[0]);
+      const time = tm ? tm[1] : '';
+      if (!tm) {
+        errors.push(
+          `${file}:${i + 1} 第 ${num} 条缺写入时刻（条目行要带 \`[time=HH:MM:SS]\`，如 \`1. [time=09:05:00] **标题**\`；写之前先取一次当前时间）`,
+        );
+      } else if (!TIME_SHAPE.test(time)) {
+        errors.push(
+          `${file}:${i + 1} 第 ${num} 条的写入时刻「${time}」不合法（应为 24 小时制的两位 \`HH:MM:SS\`，如 \`09:05:00\`）`,
+        );
+      } else {
+        if (prevTime !== null && time < prevTime && secOf(prevTime) - secOf(time) <= 12 * 3600) {
+          // 往回走一点点 = 事后编的（或换过时区）。往回走超过 12 小时只可能是跨了零点：
+          // 一份 10-20 的日志写到次日 00:07 是常事（2026-10-20 第 16 条就是这样），不是错。
+          errors.push(
+            `${file}:${i + 1} 第 ${num} 条的写入时刻 ${time} 早于上一条的 ${prevTime}（同一天的条目按写入顺序往后；只有跨零点才会往回走，往回走不到 12 小时说明这个时间不对）`,
+          );
+        }
+        prevTime = time;
+      }
       // 标题只有空白：`(.+?)` 允许纯空格，`trim()` 之后就成空串，索引里会多出一条
       // 「- 10-22   · 日志\2026-10-22.md:3」—— 一条没有标题的条目。
       // 真空 `****` 反而进不来（被 `\s*$` 挡下、落到「条目未加粗」那条），所以只查这一种。
@@ -526,7 +558,7 @@ for (const file of files) {
       }
       lastNum = Math.max(lastNum, num);
       lastEntryLine = i;
-      entries.push({ date: dateFromName, file, line: i + 1, num, title });
+      entries.push({ date: dateFromName, file, line: i + 1, num, title, time });
       continue;
     }
 
@@ -651,7 +683,7 @@ for (const file of files) {
     // 缩进的 `N. **标题**` —— 比不加粗更隐蔽：ENTRY 匹配行首，缩进行不命中，
     // 于是整条**静默消失**（不进索引、不报 WARN、不报 FAIL）。模型很容易为了
     // 表示从属关系顺手把子项加粗，结果以为记下了、索引里根本没有。必须 FAIL。
-    if (/^\s+\d+\.\s+\*\*/.test(line)) {
+    if (/^\s+\d+\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*/.test(line)) {
       errors.push(
         `${file}:${i + 1} 缩进的条目加了粗（缩进子项不要加粗，用 "-"，否则这条会静默消失）：${line.trim().slice(0, 60)}`,
       );
@@ -851,7 +883,9 @@ for (const month of months) {
       // 锚点用「文件 + 第 N 条」，不用行号。
       // 行号会因为前面插/删空行而整体漂移，而它漂的时候不报错 —— 静默指错。
       // 条目编号只在「拆条/合并」时才会漂，那是内容变化，本来就该被看见。
-      out.push(`- ${date.slice(5)}  ${e.title} · 日志\\${e.file} 第 ${e.num} 条`);
+      // 时刻照抄字段、不截到分：两处精度不同的话，索引和文件对不上时没人知道信哪份。
+      // 缺时刻的条目照样进索引（FAIL 已经报了），用 `--:--:--` 留个显眼的空位。
+      out.push(`- ${date.slice(5)} ${e.time || '--:--:--'}  ${e.title} · 日志\\${e.file} 第 ${e.num} 条`);
     }
   }
   out.push('');
