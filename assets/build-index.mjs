@@ -1,7 +1,18 @@
 // 从工作区根的 `日志\` 生成 `_日志索引.md`。
-// 用法：node 日志\build-index.mjs
-//       node 日志\build-index.mjs --explain   # 只报每行归属的行类型，不写索引
-// 零依赖。读日志，写工作区根的 _日志索引.md；顺带把日志文件的行尾修正成 CRLF。
+// 用法：node 日志\build-index.mjs            # 先尝试修复，再校验，再写索引
+//       node 日志\build-index.mjs --no-fix   # 只校验 + 写索引，不碰日志文件
+//       node 日志\build-index.mjs --explain  # 只报每行归属的行类型，不写索引
+// 零依赖。
+//
+// 三个入口的分工：
+//   --explain  只报行类型归属（诊断用）
+//   --no-fix   纯只读校验 + 写索引 —— 日志文件一个字节都不碰
+//   默认       尝试性修复 → 用修复后的内容校验 → 写索引
+//
+// 「尝试性修复」只修**答案唯一**的东西：缩进该是几个空格、空行该在哪，
+// 这些都有唯一解，而且都是空白维度 —— 一个字都不会被改。答案有两个以上的
+// （比如一行 `    **否定面**：…` 该算上一条的子项、正文续行、还是下一条的一部分）
+// 一律不修，报 FAIL 让人定。修复了什么必须逐条打印出来，不许悄悄修。
 //
 // 骨架格式（2026-10-25 起，见技能正文 §2.1）：
 //   1 date   # YYYY-MM-DD                      每文件恰好 1 条，第一个非空行
@@ -19,6 +30,9 @@ import { fileURLToPath } from 'node:url';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPLAIN = process.argv.includes('--explain');
+const NO_FIX = process.argv.includes('--no-fix');
+// --explain 是诊断入口，不该有副作用；--no-fix 是明确的「别碰日志」。
+const DO_FIX = !NO_FIX && !EXPLAIN;
 
 // 判据：目录里有 .md 文件。
 // 注意这里**不能**只认 YYYY-MM-DD.md —— 那样「日志目录里只有 2026-10-22-补充.md」
@@ -64,6 +78,7 @@ if (!EXPLAIN) {
   console.log(`✓ 工作区：${WORK_ROOT}`);
   console.log(`  日志目录：${LOG_DIR}`);
   console.log(`  输出：${OUT}`);
+  if (!DO_FIX) console.log(`  模式：${NO_FIX ? '--no-fix' : '--explain'}（只读，不改日志文件）`);
 }
 
 // 条目行：顶层无缩进、编号 + 可选方括号字段 + 加粗标题，**行尾不许再有任何东西**。
@@ -93,7 +108,165 @@ const entries = [];
 const fixedEol = [];
 const strippedBom = [];
 const explainLines = [];
+const fixes = [];
 const kindCount = { date: 0, blank: 0, entry: 0, body: 0, item: 0, fence: 0, fenceInner: 0, unclassified: 0 };
+
+// ---- 尝试性修复 ----
+// 硬线：只修**答案唯一**的东西，而且只动空白。一个字都不改。
+//   L0 行内改写  —— 缩进该是几个空格、空白行里多的空格。不增删行，行号不变。
+//   L1 增行      —— 该有空行的地方补一个。插入点唯一（就在那两行之间）。
+//   L2 删行      —— 连续空行只留一个、文件首尾的空行全删。
+// 不修的（答案有两个以上，必须人来定）：
+//   * 位置不对的空行 —— 是删掉它，还是它本来想分隔两条条目、只是漏了条目行？判不出来。
+//   * 顶格的 `- xxx` 前面一条条目都没有 —— 不知道它属于谁。
+//   * 围栏内部的行 —— 那是代码内容，缩进是内容的一部分，动了就是改字。
+//   * 正文还写在标题行上、方括号字段不合法、第二个正文段…… 这些要改写文本。
+function lightKinds(arr) {
+  const kinds = new Array(arr.length).fill('unclassified');
+  let inF = false;
+  for (let i = 0; i < arr.length; i++) {
+    const line = arr[i];
+    if (FENCE.test(line)) {
+      kinds[i] = 'fence';
+      inF = !inF;
+      continue;
+    }
+    if (inF) {
+      kinds[i] = 'fenceInner';
+      continue;
+    }
+    if (line.length === 0) kinds[i] = 'blank';
+    else if (DATE_TITLE.test(line)) kinds[i] = 'date';
+    else if (ENTRY.test(line)) kinds[i] = 'entry';
+    else if (BODY_PREFIX.test(line)) kinds[i] = 'body';
+    else if (ITEM_PREFIX.test(line)) kinds[i] = 'item';
+  }
+  return kinds;
+}
+
+function repairLog(lines, tailIdx) {
+  const done = [];
+  let arr = lines.slice(0, tailIdx);
+
+  // ---- L0-a 空白行里带空格/制表符 → 真空行 ----
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i].length > 0 && arr[i].trim() === '') {
+      done.push(`第 ${i + 1} 行 空行里有空格或制表符 → 改成真空行`);
+      arr[i] = '';
+    }
+  }
+
+  // ---- L0-b 缩进（子项 / 正文段 / 围栏标记）----
+  // 每行归属于它前面最近的那条条目；没有条目就不知道 W，不修。
+  {
+    const ownerW = new Array(arr.length).fill(null);
+    let curW = null;
+    for (let i = 0; i < arr.length; i++) {
+      const hit = ENTRY.exec(arr[i]);
+      if (hit) {
+        curW = hit[1].length + 2;
+        ownerW[i] = curW;
+        continue;
+      }
+      ownerW[i] = curW;
+    }
+    let inF = false;
+    for (let i = 0; i < arr.length; i++) {
+      const line = arr[i];
+      if (FENCE.test(line)) {
+        if (inF) {
+          inF = false;
+          continue;
+        }
+        inF = true;
+        const w = ownerW[i];
+        if (w === null) continue; // 没有归属条目 —— 让校验去报「围栏不在任何条目内」
+        const want = w + 2;
+        const got = line.length - line.trimStart().length;
+        if (got !== want) {
+          done.push(`第 ${i + 1} 行 代码围栏缩进 ${got} → ${want} 空格`);
+          arr[i] = ' '.repeat(want) + line.trimStart();
+        }
+        continue;
+      }
+      if (inF) continue; // 围栏内部：那是代码内容，一个字都不能动
+      const w = ownerW[i];
+      if (w === null) continue;
+      const bm = BODY_PREFIX.exec(line);
+      if (bm) {
+        if (bm[1].length !== w) {
+          done.push(`第 ${i + 1} 行 正文段缩进 ${bm[1].length} → ${w} 空格`);
+          arr[i] = ' '.repeat(w) + '正文：' + bm[3];
+        }
+        continue;
+      }
+      const im = ITEM_PREFIX.exec(line);
+      if (im && im[1].length !== w) {
+        done.push(`第 ${i + 1} 行 子项缩进 ${im[1].length} → ${w} 空格`);
+        arr[i] = ' '.repeat(w) + '- ' + im[2];
+      }
+    }
+  }
+
+  // ---- L2-a 文件开头的空行 ----
+  {
+    let head = 0;
+    while (head < arr.length && arr[head] === '') head++;
+    if (head > 0) {
+      done.push(`删掉文件开头的 ${head} 个空行`);
+      arr = arr.slice(head);
+    }
+  }
+  // ---- L2-b 文件末尾的空行 ----
+  {
+    let tail = arr.length;
+    while (tail > 0 && arr[tail - 1] === '') tail--;
+    if (tail < arr.length) {
+      done.push(`删掉文件末尾的 ${arr.length - tail} 个空行`);
+      arr = arr.slice(0, tail);
+    }
+  }
+  // ---- L2-c 连续空行只留一个 ----
+  {
+    const kept = [];
+    let dropped = 0;
+    for (const line of arr) {
+      if (line === '' && kept.length > 0 && kept[kept.length - 1] === '') {
+        dropped++;
+        continue;
+      }
+      kept.push(line);
+    }
+    if (dropped > 0) {
+      done.push(`删掉 ${dropped} 个多余的空行（连续空行只留一个）`);
+      arr = kept;
+    }
+  }
+
+  // ---- L1 该有空行的地方补一个 ----
+  // 放在最后：前面的删行会让「谁挨着谁」发生变化，必须基于最终形态判断。
+  {
+    const kinds = lightKinds(arr);
+    const out = [];
+    let added = 0;
+    for (let i = 0; i < arr.length; i++) {
+      out.push(arr[i]);
+      if (i + 1 >= arr.length) continue;
+      const a = kinds[i];
+      const b = kinds[i + 1];
+      if (a === 'blank' || b === 'blank' || a === 'unclassified' || b === 'unclassified') continue;
+      if (!BLANK_OK.has(`${a}→${b}`)) continue;
+      out.push('');
+      added++;
+    }
+    if (added > 0) {
+      done.push(`补上 ${added} 个缺失的空行`);
+      arr = out;
+    }
+  }
+
+  return { lines: arr, fixes: done };
+}
 
 // 文件名必须是 YYYY-MM-DD.md。不合规范的**不静默跳过** —— 整份日志会被吞掉，
 // 一条都不会进索引，而且什么信号都没有。判据只看「像不像日期」：完全不相关的
@@ -188,33 +361,54 @@ for (const file of files) {
   // 对已含 CRLF 的字符串会按 \n 分行再以 \r\n 连接，孤立 CR 就是这么来的）。
   // `\r+` 把任意多个连续 CR 先收敛成一个，再统一转 CRLF，修复与幂等同时成立。
   const crlf = text.replace(/\r+\n/g, '\n').replace(/\n/g, '\r\n');
-  if (crlf !== text || hadBom) {
-    try {
-      writeFileSync(fullPath, crlf, 'utf8');
-      if (crlf !== text) fixedEol.push(file);
-      if (hadBom) strippedBom.push(file);
-    } catch (err) {
-      // 写不进去不要紧：内存里已经有收敛好的 crlf，继续拿它解析，
-      // 索引不会缺条目。只是纠正落不了盘，报出来让人知道。
-      const hint =
-        err.code === 'EPERM' || err.code === 'EACCES' ? '文件只读或被占用' : `${err.code || err.name}: ${err.message}`;
-      errors.push(`${file}: 行尾/BOM 修正写不回去 —— ${hint}（索引按内存内容生成，不受影响）`);
-    }
-  }
 
   const lines = crlf.split('\n');
   // split('\n') 之后每行末尾可能带 \r（CRLF 文件），统一剥掉再匹配
   for (let i = 0; i < lines.length; i++) lines[i] = lines[i].replace(/\r$/, '');
   // 文件末尾的那个空元素是「最后一个换行符之后」，不是一行内容
-  const tailIdx = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+  let tailIdx = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+
+  // ---- 尝试性修复（只在默认模式下跑）----
+  // 修完必须重新落到 lines/tailIdx 上：修复会增删行，后面的校验必须看修完的形态。
+  // 强调「重新」不是多余的 —— 如果拿修之前的 kinds 继续校验，缩进修好了却按旧的报错。
+  let repaired = null;
+  if (DO_FIX && lines.length > 0) {
+    const r = repairLog(lines, tailIdx);
+    if (r.fixes.length > 0) {
+      repaired = r.lines;
+      tailIdx = r.lines.length;
+      for (const f of r.fixes) fixes.push(`${file}: ${f}`);
+    }
+  }
+  const body = repaired ?? lines.slice(0, tailIdx);
+
+  // 落盘：把修复结果 + CRLF 收敛 + 剥 BOM 一次性写回。
+  // --no-fix / --explain 一律不写 —— 「只读」必须是真的只读，
+  // 否则 2026-10-25 那条「`--explain` 会改日志文件」的坑会换个入口再犯一次。
+  const outText = body.length ? `${body.join('\r\n')}\r\n` : '';
+  if (DO_FIX && (outText !== raw || hadBom)) {
+    try {
+      writeFileSync(fullPath, outText, 'utf8');
+      if (outText !== raw && crlf !== text) fixedEol.push(file);
+      if (hadBom) strippedBom.push(file);
+    } catch (err) {
+      // 写不进去不要紧：内存里已经是修好的内容，继续拿它解析，
+      // 索引不会缺条目。只是修复落不了盘，报出来让人知道。
+      const hint =
+        err.code === 'EPERM' || err.code === 'EACCES' ? '文件只读或被占用' : `${err.code || err.name}: ${err.message}`;
+      errors.push(`${file}: 修复结果写不回去 —— ${hint}（索引按内存内容生成，不受影响）`);
+    }
+  }
+
+  const lines2 = body;
 
   // 校验第一个非空行是日期标题、且与文件名一致（自证）
-  const firstContent = lines.findIndex((l, i) => i < tailIdx && l.trim() !== '');
+  const firstContent = lines2.findIndex((l, i) => i < tailIdx && l.trim() !== '');
   if (firstContent === -1) {
     errors.push(`${file}: 空文件`);
     continue;
   }
-  const m = DATE_TITLE.exec(lines[firstContent]);
+  const m = DATE_TITLE.exec(lines2[firstContent]);
   if (!m) {
     errors.push(`${file}:${firstContent + 1} 第一行不是 "# YYYY-MM-DD" 日期标题`);
   } else if (m[1] !== dateFromName) {
@@ -236,7 +430,7 @@ for (const file of files) {
   let curEntry = null; // { num, line, w, bodyCount, bodyLine, sawItem }
 
   for (let i = 0; i < tailIdx; i++) {
-    const line = lines[i];
+    const line = lines2[i];
 
     // 代码围栏：``` 或 ~~~ 之间的一切都是「给别人看的示例」，不是条目。
     // 不屏蔽的话，日志里贴一段格式示例（非常常见）就会被当成真条目收进索引 ——
@@ -501,7 +695,7 @@ for (const file of files) {
     }
     // 每条的字数（整条口径：编号 + 标题 + 正文 + 子项，含条目内部的空行，不含条目之间的空行）。
     // 这里只**统计并报告**，不判定 —— 见下面 TIER_* 处的说明。
-    e.chars = lines.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
+    e.chars = lines2.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
   }
 
   // ---- 空行位置校验（只允许那 5 个位置，每处恰好 1 个）----
@@ -697,6 +891,18 @@ if (fixedEol.length) {
 }
 if (strippedBom.length) {
   console.log(`  剥离 UTF-8 BOM：${strippedBom.join('、')}`);
+}
+// 修复必须说出口，而且排在 FAIL 之前 —— 因为「修了什么」是判断「还错什么」的前提。
+// 悄悄修好等于把根因藏起来：2026-10 那 26 处「两位编号配 3 空格」如果当时被脚本
+// 一次次默默修掉，就永远发现不了「技能正文一个字没提缩进多少」这个真因
+// （10-15 自评：把判断换成外部检查 —— 但外部检查一旦自动修，就成了掩盖问题）。
+if (fixes.length) {
+  console.log(`\n已自动修复 ${fixes.length} 处（只动空白与空行，一个字没改）`);
+  for (const f of fixes) console.log(`  ${f}`);
+  if (DO_FIX) {
+    console.log('  → 提交前请用 `git diff -w --ignore-blank-lines -- 日志\\` 确认报告属实：');
+    console.log('    只改缩进和空行时它输出为空；只要有一个字变了，它会立刻显示出来。');
+  }
 }
 if (warnings.length) {
   console.log(`\nWARN ${warnings.length}`);

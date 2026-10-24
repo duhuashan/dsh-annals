@@ -302,7 +302,8 @@ test('正文段缩进不对 FAIL（两位编号用 3 空格）', () => {
   // 第 10 条是两位编号，正文段该缩进 4 空格，这里故意给 3
   blocks.push(`10. **第十条**\n\n   正文：缩进错了。`);
   const ws = caseWs({ [`${DAY}.md`]: log(...blocks) });
-  const r = run(ws);
+  // 默认入口会先把它修好，所以这里用 --no-fix 看校验器的判定
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /正文段缩进 3 空格，应为 4 空格/);
 });
@@ -316,7 +317,7 @@ test('子项出现在正文段之前 FAIL', () => {
 
 test('子项缩进不对 FAIL', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /子项缩进 5 空格，应为 3 空格/);
 });
@@ -347,21 +348,21 @@ test('--explain 报出每行的行类型归属，且退出码 0', () => {
 
 test('连续空行 FAIL', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n\n2. **乙**\n\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /连续空行/);
 });
 
 test('文件开头有空行 FAIL', () => {
   const ws = caseWs({ [`${DAY}.md`]: `\n# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /文件开头的空行/);
 });
 
 test('文件末尾有空行 FAIL', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /文件末尾的空行/);
 });
@@ -378,7 +379,7 @@ test('空行位置不对 FAIL（正文段与子项之间塞了空行后又空一
 
 test('空行里带空格 FAIL', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n \n1. **甲**\n\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /空白行里带了空格或制表符/);
 });
@@ -389,28 +390,28 @@ test('空行里带空格 FAIL', () => {
 
 test('缺空行 FAIL：条目行紧接正文段', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（entry → body/);
 });
 
 test('缺空行 FAIL：正文段紧接子项', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n   - 子项\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（body → item/);
 });
 
 test('缺空行 FAIL：日期标题紧接第 1 条', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n1. **甲**\n\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（date → entry/);
 });
 
 test('缺空行 FAIL：最后一个子项紧接下一条', () => {
   const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n   - 子项\n2. **乙**\n\n   正文：正文。\n` });
-  const r = run(ws);
+  const r = run(ws, { argv: ['--no-fix'] });
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /缺空行（item → entry/);
 });
@@ -636,4 +637,112 @@ test('脚本放工作区根（B 情形）也能工作', () => {
   }
   assert.equal(code, 0, out);
   assert.equal(entryCount(readFileSync(join(root, '_日志索引.md'), 'utf8')), 1);
+});
+
+// ── 尝试性修复（默认入口）────────────────────────────────────
+//
+// 上面那些 --no-fix 的用例证明「校验器认得错」；这一组证明「默认入口把能修
+// 的修掉了」。两类错误在默认入口下的命运不同，所以必须分开验：
+//
+//   L0 行内改（缩进、空行里的空格）—— 修完直接通过，exit 0
+//   L1/L2 增删行（补缺失空行、删多余空行）—— 修完直接通过，exit 0
+//   答案不唯一的（正文还写在标题行上、第二个正文段…）—— 修不了，仍然 FAIL
+
+// 只在修复器真的写盘并修好时成立：文件内容变了、报告说了改了什么、退出码 0。
+test('默认入口：子项缩进能被修好，且报告说清改了哪几行', () => {
+  const path = `${DAY}.md`;
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
+  const before = readFileSync(join(ws.logDir, path), 'utf8');
+  const r = run(ws);
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /已自动修复 \d+ 处/);
+  assert.match(r.out, /子项缩进 5 → 3 空格/);
+  // 文件真的变了，且只动了空白
+  assert.notEqual(before, after);
+  assert.equal(before.replace(/\s+/g, ''), after.replace(/\s+/g, ''));
+  // 修完之后校验器不再报这一条
+  assert.doesNotMatch(r.out, /子项缩进 5 空格，应为 3 空格/);
+});
+
+test('默认入口：缺的空行会被补上，补完通过', () => {
+  const path = `${DAY}.md`;
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲**\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /补上 \d+ 个缺失的空行/);
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+  // 条目行与正文段之间确实多了空行
+  assert.match(after, /1\. \*\*甲\*\*\r?\n\r?\n {3}正文：/);
+});
+
+test('默认入口：多余空行与首尾空行会被删掉，删完通过', () => {
+  const path = `${DAY}.md`;
+  // 首部 2 个空行、末尾 3 个空行、中间夹 2 个空行（该留一个）
+  const ws = caseWs({
+    [path]: `\n\n# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n\n2. **乙**\n\n   正文：正文。\n\n\n\n`,
+  });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /删掉文件开头的 2 个空行/);
+  assert.match(r.out, /删掉文件末尾的 3 个空行/);
+  assert.match(r.out, /删掉 1 个多余的空行/);
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.doesNotMatch(after, /^\r?\n/);
+  assert.match(after, /正文：正文。\r?\n$/);
+  // 条目之间只剩一个空行
+  assert.doesNotMatch(after, /\r?\n\r?\n\r?\n/);
+});
+
+test('默认入口：答案不唯一的错不修，仍然 FAIL', () => {
+  const path = `${DAY}.md`;
+  const ws = caseWs({ [path]: `# ${DAY}\n\n1. **甲** —— 正文还挂在标题行上。\n\n   正文：正文。\n` });
+  const before = readFileSync(join(ws.logDir, path), 'utf8');
+  const r = run(ws);
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /正文还写在标题行上/);
+  // 一个字都没改 —— 行尾可能被统一成 CRLF，所以比非空白字符
+  assert.equal(before.replace(/\s+/g, ''), after.replace(/\s+/g, ''));
+});
+
+// 幂等：已经合规的文件内容跑一遍必须不变。「字节一个不变」这一条现在守不住也不该守 ——
+// 修复前夹具是 LF、跑完统一成 CRLF，那是行尾归一化，不是内容改动。所以比非空白字符序列。
+// 真正的字节级幂等由 `默认入口幂等：跑第二遍连行尾都不动` 保证。
+test('默认入口幂等：合规文件跑一遍，内容一个不变', () => {
+  const path = `${DAY}.md`;
+  const ws = caseWs({ [path]: log(e(1, '**甲**', '正文。', '子项'), e(2, '**乙**', '正文。')) });
+  const before = readFileSync(join(ws.logDir, path), 'utf8');
+  const r = run(ws);
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.equal(r.code, 0, r.out);
+  assert.equal(before.replace(/\s+/g, ''), after.replace(/\s+/g, ''));
+  assert.doesNotMatch(r.out, /已自动修复/);
+});
+
+test('默认入口幂等：跑第二遍连行尾都不动', () => {
+  const path = `${DAY}.md`;
+  const ws = caseWs({ [path]: log(e(1, '**甲**', '正文。', '子项'), e(2, '**乙**', '正文。')) });
+  run(ws); // 第一遍：归一化行尾
+  const settled = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.match(settled, /\r\n/);
+  const r2 = run(ws); // 第二遍：什么都不该变
+  const again = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.equal(r2.code, 0, r2.out);
+  assert.equal(again, settled);
+  assert.doesNotMatch(r2.out, /已自动修复/);
+});
+
+// --no-fix 的意义就在这里：同一份脏文件，默认入口修好了，--no-fix 必须原样留着。
+test('--no-fix 不修：脏文件一个字节都不改，且退出码 1', () => {
+  const path = `${DAY}.md`;
+  const dirty = `# ${DAY}\n\n1. **甲**\n   正文：正文。\n\n     - 缩进多了。\n`;
+  const ws = caseWs({ [path]: dirty });
+  const r = run(ws, { argv: ['--no-fix'] });
+  const after = readFileSync(join(ws.logDir, path), 'utf8');
+  assert.equal(r.code, 1, r.out);
+  assert.equal(after, dirty);
+  assert.doesNotMatch(r.out, /已自动修复/);
+  assert.match(r.out, /模式：--no-fix/);
 });
