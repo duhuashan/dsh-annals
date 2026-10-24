@@ -1,9 +1,12 @@
 // build-index.mjs 的端到端用例：每个用例建一个临时工作区，把真实的生成器脚本
 // 放进去，用 execFileSync 跑一遍，然后断言「退出码 + 输出关键字 + 索引条目数」。
 //
-// 为什么单独开一个文件：test/offline.mjs 里的 32 个用例测的是插件本体，
+// 为什么单独开一个文件：test/offline.mjs 里的用例测的是插件本体，
 // build-index.mjs 在里面只以 `// stub` 的占位形式出现 —— 生成器逻辑零覆盖。
 // 而生成器是这套日志系统里唯一真正执行约定的东西，出错没人拦得住。
+//
+// 2026-10-25 骨架结构化改造后，用例里的 fixture 全部换成新格式（条目行 + 正文段 + 子项），
+// 并补了十来条针对新规则的用例（未归类行、空行位置、正文段缺失/重复/缩进）。
 //
 // 运行：node --test test/build-index.test.mjs
 
@@ -38,10 +41,11 @@ function makeWs(files, opts = {}) {
 // index 是索引文件内容；没生成则为 null。
 function run(ws, opts = {}) {
   const scriptPath = join(opts.scriptInRoot ? ws.root : ws.logDir, 'build-index.mjs');
+  const argv = opts.argv ? [scriptPath, ...opts.argv] : [scriptPath];
   let code = 0;
   let out = '';
   try {
-    out = execFileSync(process.execPath, [scriptPath], { encoding: 'utf8', stdio: 'pipe' });
+    out = execFileSync(process.execPath, argv, { encoding: 'utf8', stdio: 'pipe' });
   } catch (err) {
     code = err.status ?? 1;
     out = `${err.stdout || ''}${err.stderr || ''}`;
@@ -57,14 +61,44 @@ function entryCount(index) {
   return index.split('\n').filter((l) => l.startsWith('- ')).length;
 }
 
-// 一份最小合法日志
-function log(...body) {
-  return `# ${DAY}\n\n${body.join('\n\n')}\n`;
+// ── fixture 构造 ────────────────────────────────────────────
+
+// 一条合规条目：条目行 + 空行 + 正文段 + （有子项时空行 + 子项）。
+// 缩进 = 编号位数 + 2（`1. ` → 3 空格，`10. ` → 4 空格）。
+function e(num, title, body, ...items) {
+  const pad = ' '.repeat(String(num).length + 2);
+  const block = [`${num}. ${title}`, '', `${pad}正文：${body}`];
+  if (items.length) {
+    block.push('');
+    for (const it of items) block.push(`${pad}- ${it}`);
+  }
+  return block.join('\n');
 }
 
-const CASES = [];
-function cleanup(t) {
-  CASES.push(t.ws.root);
+// 一整个日志文件：日期标题 + 若干条目（之间正好一个空行）。
+function log(...blocks) {
+  return `# ${DAY}\n\n${blocks.join('\n\n')}\n`;
+}
+
+// 一份「最小合法日志」：一条
+function one(title = '**甲**', body = '正文甲。') {
+  return log(e(1, title, body));
+}
+
+// 子项里嵌的围栏块。围栏行缩进 = W+2 = 编号位数 + 4（`1. ` 的 W 是 3，围栏 5 空格）。
+// 注意围栏必须紧跟在子项行后面（中间不空行）—— 围栏是子项内容的延伸，
+// 空行插在 item 与 fence 之间会被判成「空行位置不对」。
+function fenceIn(num, code, lang = '') {
+  const pad = ' '.repeat(String(num).length + 4);
+  const opener = `${pad}\`\`\`${lang}`;
+  const lines = code.split('\n').map((l) => (l === '' ? l : pad + l));
+  return [opener, ...lines, `${pad}\`\`\``].join('\n');
+}
+
+// 一条带围栏子项的条目：条目行 + 空行 + 正文段 + 空行 + 子项行 + 围栏块（紧邻）
+function eFence(num, title, body, code, lang = '') {
+  const pad = ' '.repeat(String(num).length + 2);
+  return [`${num}. ${title}`, '', `${pad}正文：${body}`, '', `${pad}- 示例：`, fenceIn(num, code, lang)].join('\n');
 }
 
 const results = [];
@@ -87,30 +121,52 @@ function caseWs(files, opts) {
 // ── 正常路径 ────────────────────────────────────────────────
 
 test('正常两条：索引 2 条、exit 0', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1. **甲** —— 正文甲。', '2. **乙** —— 正文乙。') });
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文甲。'), e(2, '**乙**', '正文乙。')) });
   const r = run(ws);
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 0, r.out);
   assert.equal(entryCount(r.index), 2);
   assert.match(r.index, /甲 · 日志\\2026-10-22\.md:3/);
 });
 
-test('缩进的非加粗子项是合法的', () => {
-  const ws = caseWs({
-    [`${DAY}.md`]: log('1. **甲** —— 正文。', '   - **要点**：细节'),
-  });
+test('子项是合法的（正文段之后的缩进 - ）', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。', '**要点**：细节')) });
   const r = run(ws);
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 0, r.out);
   assert.equal(entryCount(r.index), 1);
 });
 
-// ── 问题 1、2：代码围栏 ──────────────────────────────────────
+test('一位编号与两位编号的缩进各自正确', () => {
+  // 1 → 3 空格；10 → 4 空格。两者同时出现时都必须被认成子项而不是未归类行。
+  const blocks = [];
+  for (let i = 1; i <= 10; i++) blocks.push(e(i, `**第 ${i} 条**`, `正文 ${i}。`, `子项 ${i}`));
+  const ws = caseWs({ [`${DAY}.md`]: log(...blocks) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(entryCount(r.index), 10);
+  assert.match(r.out, /unclassified 0/);
+});
+
+test('条目行可带方括号字段', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '[time=14:32:05][tier=B] **甲**', '正文。')) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(entryCount(r.index), 1);
+  assert.match(r.index, /甲 · 日志/);
+});
+
+test('无子项的条目也合法（正文段后直接下一条）', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '一。'), e(2, '**乙**', '二。')) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.equal(entryCount(r.index), 2);
+});
+
+// ── 代码围栏 ────────────────────────────────────────────────
 
 test('代码围栏里的条目不被收录', () => {
-  const fence = '```markdown';
   const ws = caseWs({
     [`${DAY}.md`]: log(
-      '1. **真条目** —— 真的。',
-      [fence, '2. **这是给用户看的格式示例** —— 不是真条目。', '```'].join('\n'),
+      eFence(1, '**真条目**', '真的。', '2. **这是给用户看的格式示例** —— 不是真条目。', 'markdown'),
     ),
   });
   const r = run(ws);
@@ -121,10 +177,7 @@ test('代码围栏里的条目不被收录', () => {
 
 test('代码围栏里缩进加粗的示例不误报 FAIL', () => {
   const ws = caseWs({
-    [`${DAY}.md`]: log(
-      '1. **甲** —— 正文。',
-      ['```', '   5. **代码块里缩进加粗**', '```'].join('\n'),
-    ),
+    [`${DAY}.md`]: log(eFence(1, '**甲**', '正文。', '   5. **代码块里缩进加粗**')),
   });
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
@@ -132,18 +185,38 @@ test('代码围栏里缩进加粗的示例不误报 FAIL', () => {
 });
 
 test('代码围栏没闭合会报 WARN', () => {
-  const ws = caseWs({
-    [`${DAY}.md`]: log('1. **甲** —— 正文。', ['```', '2. **乙** —— 被吞。'].join('\n')),
-  });
+  // 故意只开不闭：围栏之后的条目全被吞
+  const pad = ' '.repeat(5);
+  const broken = `1. **甲**\n\n${' '.repeat(3)}正文：正文。\n\n${' '.repeat(3)}- 子项：\n\n${pad}\`\`\`\n${pad}2. **乙** —— 被吞。`;
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n${broken}\n` });
   const r = run(ws);
   assert.match(r.out, /代码围栏没有闭合/);
   assert.equal(entryCount(r.index), 1);
 });
 
-// ── 问题 3、4：写法不规范的条目 ──────────────────────────────
+test('围栏缩进不是 W+2 会 FAIL', () => {
+  // 编号 1 位 → 围栏该缩进 5 空格，这里给 3 空格
+  const bad = `1. **甲**\n\n   正文：正文。\n\n   - 子项：\n\n   \`\`\`\n   code\n   \`\`\``;
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n${bad}\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /代码围栏缩进/);
+});
+
+test('围栏内部的空行原样保留（不受空行规则约束）', () => {
+  const ws = caseWs({
+    [`${DAY}.md`]: log(eFence(1, '**甲**', '正文。', 'line1\n\nline3')),
+  });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  const after = readFileSync(join(ws.logDir, `${DAY}.md`), 'utf8');
+  assert.match(after, /line1\r?\n\r?\n\s+line3/, '围栏内的空行不该被删掉');
+});
+
+// ── 写法不规范的条目 ────────────────────────────────────────
 
 test('全角数字编号会 FAIL，不静默吞掉', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('１. **甲** —— 正文。') });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n１. **甲**\n\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /条目写法不规范/);
@@ -151,65 +224,210 @@ test('全角数字编号会 FAIL，不静默吞掉', () => {
 });
 
 test('缺空格的 1.**甲** 会 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1.**甲** —— 正文。') });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1.**甲**\n\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /条目写法不规范/);
 });
 
 test('顿号 1、**甲** 会 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1、**甲** —— 正文。') });
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1、**甲**\n\n   正文：正文。\n` });
   const r = run(ws);
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /条目写法不规范/);
 });
 
-// ── 问题 5：BOM ────────────────────────────────────────────
+test('正文还写在标题行上（旧写法）FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** —— 正文还在这一行。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /正文还写在标题行上/);
+  assert.match(r.out, /缩进 3 空格/);
+});
+
+test('条目行标题后面还有内容 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** 多余的尾巴\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /标题后面还有内容/);
+});
+
+test('方括号字段不合法（缺等号）FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. [BAD] **甲**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /方括号字段不合法/);
+});
+
+test('未加粗的条目 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. 甲\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /条目未加粗/);
+});
+
+test('缩进加粗的条目 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。'), `   2. **乙**`) });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /缩进的条目加了粗/);
+});
+
+// ── 正文段规则 ──────────────────────────────────────────────
+
+test('缺正文段 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /没有正文段/);
+});
+
+test('正文段是空的 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /正文段是空的/);
+});
+
+test('两个正文段 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：一。\n\n   正文：二。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /有第二个正文段/);
+});
+
+test('正文段缩进不对 FAIL（两位编号用 3 空格）', () => {
+  const blocks = [];
+  for (let i = 1; i <= 9; i++) blocks.push(e(i, `**第 ${i} 条**`, `正文 ${i}。`));
+  // 第 10 条是两位编号，正文段该缩进 4 空格，这里故意给 3
+  blocks.push(`10. **第十条**\n\n   正文：缩进错了。`);
+  const ws = caseWs({ [`${DAY}.md`]: log(...blocks) });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /正文段缩进 3 空格，应为 4 空格/);
+});
+
+test('子项出现在正文段之前 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   - 先有子项。\n\n   正文：后补的。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /先出现子项、后补正文/);
+});
+
+test('子项缩进不对 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n     - 缩进多了。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /子项缩进 5 空格，应为 3 空格/);
+});
+
+// ── 行类型封闭性 ────────────────────────────────────────────
+
+test('未归类行 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。'), '这一行什么都不是') });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /未归类行/);
+});
+
+test('--explain 报出每行的行类型归属，且退出码 0', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。', '子项')) });
+  const r = run(ws, { argv: ['--explain'] });
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /date /);
+  assert.match(r.out, /entry /);
+  assert.match(r.out, /body /);
+  assert.match(r.out, /item /);
+  assert.match(r.out, /unclassified 0/);
+  // --explain 不写索引
+  assert.equal(r.index, null);
+});
+
+// ── 空行规则 ────────────────────────────────────────────────
+
+test('连续空行 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n\n2. **乙**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /连续空行/);
+});
+
+test('文件开头有空行 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `\n# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /文件开头的空行/);
+});
+
+test('文件末尾有空行 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /文件末尾的空行/);
+});
+
+test('空行位置不对 FAIL（正文段与子项之间塞了空行后又空一行）', () => {
+  // item → item 不是合法的空行位置
+  const ws = caseWs({
+    [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n   - 一。\n\n   - 二。\n`,
+  });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /空行位置不对/);
+});
+
+test('空行里带空格 FAIL', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n \n1. **甲**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /空白行里带了空格或制表符/);
+});
+
+// ── BOM ─────────────────────────────────────────────────────
 
 test('UTF-8 BOM 被剥离且不误报日期标题', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `\uFEFF${log('1. **甲** —— 正文。')}` });
+  const ws = caseWs({ [`${DAY}.md`]: `\uFEFF${one()}` });
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
   assert.equal(entryCount(r.index), 1);
   assert.match(r.out, /剥离 UTF-8 BOM/);
-  // 落盘后 BOM 应当没了
   const after = readFileSync(join(ws.logDir, `${DAY}.md`), 'utf8');
   assert.equal(after.startsWith('\uFEFF'), false);
 });
 
-// ── 问题 6、7：编号文案 ──────────────────────────────────────
+// ── 编号文案 ────────────────────────────────────────────────
 
 test('编号重复说「重复」，不出现负数', () => {
   const ws = caseWs({
-    [`${DAY}.md`]: log('1. **甲** —— 一。', '1. **乙** —— 二。', '2. **丙** —— 三。'),
+    [`${DAY}.md`]: log(e(1, '**甲**', '一。'), e(1, '**乙**', '二。'), e(2, '**丙**', '三。')),
   });
   const r = run(ws);
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 0, r.out);
   assert.match(r.out, /编号 1 重复/);
   assert.doesNotMatch(r.out, /缺 -/);
 });
 
 test('编号倒序说「比上一条小」，不出现负数', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('2. **甲** —— 一。', '1. **乙** —— 二。') });
+  const ws = caseWs({ [`${DAY}.md`]: log(e(2, '**甲**', '一。'), e(1, '**乙**', '二。')) });
   const r = run(ws);
-  assert.equal(r.code, 0);
+  assert.equal(r.code, 0, r.out);
   assert.match(r.out, /编号 1 比上一条 2 小/);
   assert.doesNotMatch(r.out, /缺 -/);
 });
 
 test('编号跳号仍然报缺几条', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1. **甲** —— 一。', '4. **乙** —— 二。') });
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '一。'), e(4, '**乙**', '二。')) });
   const r = run(ws);
   assert.match(r.out, /编号从 1 跳到 4（缺 2 条）/);
 });
 
-// ── 问题 8：位置校验 ────────────────────────────────────────
+// ── 位置校验 ────────────────────────────────────────────────
 
 test('脚本放在无关子目录会报错退出（无 日志\\ 子目录时）', () => {
   const outer = mkdtempSync(join(tmpdir(), 'bi-outer-'));
   results.push(outer);
   mkdirSync(join(outer, '日志'), { recursive: true });
-  writeFileSync(join(outer, '日志', `${DAY}.md`), log('1. **甲** —— 正文。'));
+  writeFileSync(join(outer, '日志', `${DAY}.md`), one());
   const other = join(outer, '随便');
   mkdirSync(other, { recursive: true });
   copyFileSync(SCRIPT, join(other, 'build-index.mjs'));
@@ -225,7 +443,7 @@ test('脚本放在无关子目录会报错退出（无 日志\\ 子目录时）'
   assert.match(out, /找不到工作区/);
 });
 
-// ── 问题 9、10：崩溃友好化 ──────────────────────────────────
+// ── 崩溃友好化 ──────────────────────────────────────────────
 
 test('同名目录不会喷栈，报「这是个目录」', () => {
   const ws = makeWs({});
@@ -238,10 +456,10 @@ test('同名目录不会喷栈，报「这是个目录」', () => {
   assert.doesNotMatch(r.out, /EISDIR.*at /);
 });
 
-// ── 问题 11：只有坏名文件 ───────────────────────────────────
+// ── 只有坏名文件 ────────────────────────────────────────────
 
 test('只有坏名文件时报「文件名不合规范」而非「找不到工作区」', () => {
-  const ws = makeWs({ [`${DAY}-补充.md`]: log('1. **甲** —— 正文。') });
+  const ws = makeWs({ [`${DAY}-补充.md`]: one() });
   results.push(ws.root);
   copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
   const r = run(ws);
@@ -249,101 +467,35 @@ test('只有坏名文件时报「文件名不合规范」而非「找不到工�
   assert.doesNotMatch(r.out, /找不到工作区/);
 });
 
-// ── 问题 12：概览变体 ──────────────────────────────────────
+// ── 概览变体 ────────────────────────────────────────────────
 
 test('**概览**：加粗形式也能抓到', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('**概览**：今天干了三件大事。', '1. **甲** —— 正文。') });
+  const ws = caseWs({ [`${DAY}.md`]: log('**概览**：今天干了三件大事。', e(1, '**甲**', '正文。')) });
   const r = run(ws);
   assert.match(r.out, /出现了「概览」行/);
 });
 
-// ── 问题 13：日期标题前导空格 ───────────────────────────────
+// ── 日期标题 ────────────────────────────────────────────────
 
 test('日期标题带前导空格不报 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `  # ${DAY}\n\n1. **甲** —— 正文。\n` });
+  const ws = caseWs({ [`${DAY}.md`]: `  # ${DAY}\n\n${e(1, '**甲**', '正文。')}\n` });
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
   assert.equal(entryCount(r.index), 1);
 });
 
-// ── 问题 14：非法日期 ──────────────────────────────────────
-
-test('2026-13-45.md 会 FAIL', () => {
-  const ws = caseWs({ '2026-13-45.md': '# 2026-13-45\n\n1. **甲** —— 正文。\n' });
-  const r = run(ws);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /日期不存在/);
-});
-
-// ── 问题 15：编码 ──────────────────────────────────────────
-
-test('非 UTF-8 字节会 WARN', () => {
-  const ws = makeWs({});
-  results.push(ws.root);
-  // GBK 编码的「标题」两字：0xB1 0xEA 0xCC 0xE2
-  const head = Buffer.from(`# ${DAY}\n\n1. **`, 'utf8');
-  const gbk = Buffer.from([0xb1, 0xea, 0xcc, 0xe2]);
-  const tail = Buffer.from(`** —— 正文。\n`, 'utf8');
-  writeFileSync(join(ws.logDir, `${DAY}.md`), Buffer.concat([head, gbk, tail]));
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
-  const r = run(ws);
-  assert.match(r.out, /疑似非 UTF-8/);
-});
-
-// ── 原有防线回归 ───────────────────────────────────────────
-
-test('\\r\\r\\n 被收敛成 CRLF', () => {
-  const ws = makeWs({});
-  results.push(ws.root);
-  const body = `# ${DAY}\r\r\n\r\r\n1. **甲** —— 正文。\r\r\n`;
-  writeFileSync(join(ws.logDir, `${DAY}.md`), body);
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
-  const r = run(ws);
-  assert.equal(r.code, 0, r.out);
-  const after = readFileSync(join(ws.logDir, `${DAY}.md`), 'utf8');
-  assert.equal(after.replace(/\r\n/g, '').includes('\r'), false, '不该残留孤立 CR');
-});
-
-test('缩进加粗的条目 FAIL（围栏外）', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1. **甲** —— 正文。', '   2. **乙** —— 缩进加粗。') });
-  const r = run(ws);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /缩进的条目加了粗/);
-});
-
-test('未加粗的条目 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1. 甲 —— 未加粗。') });
-  const r = run(ws);
-  assert.equal(r.code, 1);
-  assert.match(r.out, /条目未加粗/);
-});
-
-test('条目间缺空行 WARN', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** —— 一。\n2. **乙** —— 二。\n` });
-  const r = run(ws);
-  assert.match(r.out, /之间没有空行/);
-});
-
-test('标题后没有正文 WARN', () => {
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n` });
-  const r = run(ws);
-  assert.match(r.out, /标题后没有正文/);
-});
-
-test('单日再长也不报超长 WARN（2026-10-22 取消该检查）', () => {
-  const big = 'x'.repeat(20050);
-  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲** —— ${big}\n` });
-  const r = run(ws);
-  assert.equal(r.code, 0);
-  assert.doesNotMatch(r.out, /20,000|超过建议/);
-  assert.match(r.out, /1 条/);
-});
-
 test('日期标题与文件名不一致 FAIL', () => {
-  const ws = caseWs({ [`${DAY}.md`]: '# 2026-10-23\n\n1. **甲** —— 正文。\n' });
+  const ws = caseWs({ [`${DAY}.md`]: '# 2026-10-23\n\n1. **甲**\n\n   正文：正文。\n' });
   const r = run(ws);
   assert.equal(r.code, 1);
   assert.match(r.out, /不一致/);
+});
+
+test('2026-13-45.md 会 FAIL', () => {
+  const ws = caseWs({ '2026-13-45.md': '# 2026-13-45\n\n1. **甲**\n\n   正文：正文。\n' });
+  const r = run(ws);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /日期不存在/);
 });
 
 test('空文件 FAIL', () => {
@@ -353,8 +505,55 @@ test('空文件 FAIL', () => {
   assert.match(r.out, /空文件/);
 });
 
+// ── 编码 ────────────────────────────────────────────────────
+
+test('非 UTF-8 字节会 WARN', () => {
+  const ws = makeWs({});
+  results.push(ws.root);
+  // GBK 编码的「标题」两字：0xB1 0xEA 0xCC 0xE2，塞进标题里
+  const head = Buffer.from(`# ${DAY}\n\n1. **`, 'utf8');
+  const gbk = Buffer.from([0xb1, 0xea, 0xcc, 0xe2]);
+  const tail = Buffer.from(`**\n\n   正文：正文。\n`, 'utf8');
+  writeFileSync(join(ws.logDir, `${DAY}.md`), Buffer.concat([head, gbk, tail]));
+  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  const r = run(ws);
+  assert.match(r.out, /疑似非 UTF-8/);
+});
+
+// ── 原有防线回归 ────────────────────────────────────────────
+
+test('\\r\\r\\n 被收敛成 CRLF', () => {
+  const ws = makeWs({});
+  results.push(ws.root);
+  const body = `# ${DAY}\r\r\n\r\r\n1. **甲**\r\r\n\r\r\n   正文：正文。\r\r\n`;
+  writeFileSync(join(ws.logDir, `${DAY}.md`), body);
+  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  const after = readFileSync(join(ws.logDir, `${DAY}.md`), 'utf8');
+  assert.equal(after.replace(/\r\n/g, '').includes('\r'), false, '不该残留孤立 CR');
+});
+
+test('单日再长也不报超长 WARN（2026-10-22 取消该检查）', () => {
+  const big = 'x'.repeat(20050);
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', big)) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /20,000|超过建议/);
+  assert.match(r.out, /1 条/);
+});
+
+test('三档统计仍然输出，且只报告不阻断', () => {
+  const big = 'x'.repeat(2000);
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**小**', '短。'), e(2, '**大**', big)) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /详略（全库）：A \d+ \/ B \d+ \/ C \d+/);
+  assert.match(r.out, /详略（\d\d-\d\d）：A \d+ \/ B \d+ \/ C \d+/);
+});
+
 test('幂等：跑两次索引内容一致', () => {
-  const ws = caseWs({ [`${DAY}.md`]: log('1. **甲** —— 正文。') });
+  const ws = caseWs({ [`${DAY}.md`]: one() });
   const first = run(ws);
   const second = run(ws);
   assert.equal(first.index, second.index);
@@ -365,7 +564,7 @@ test('脚本放工作区根（B 情形）也能工作', () => {
   const root = mkdtempSync(join(tmpdir(), 'bi-root-'));
   results.push(root);
   mkdirSync(join(root, '日志'), { recursive: true });
-  writeFileSync(join(root, '日志', `${DAY}.md`), log('1. **甲** —— 正文。'));
+  writeFileSync(join(root, '日志', `${DAY}.md`), one());
   copyFileSync(SCRIPT, join(root, 'build-index.mjs'));
   let code = 0;
   let out = '';

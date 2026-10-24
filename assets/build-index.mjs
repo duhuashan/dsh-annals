@@ -1,12 +1,24 @@
 // 从工作区根的 `日志\` 生成 `_日志索引.md`。
-// 用法：node 日志\build-index.mjs（脚本也可放在工作区根，直接 node build-index.mjs）。
+// 用法：node 日志\build-index.mjs
+//       node 日志\build-index.mjs --explain   # 只报每行归属的行类型，不写索引
 // 零依赖。读日志，写工作区根的 _日志索引.md；顺带把日志文件的行尾修正成 CRLF。
+//
+// 骨架格式（2026-10-25 起，见技能正文 §2.1）：
+//   1 date   # YYYY-MM-DD                      每文件恰好 1 条，第一个非空行
+//   2 blank  长度 0                            只允许出现在 5 处，每处恰好 1 个
+//   3 entry  N. [k=v…] **标题**                顶层无缩进，尾部不许再有内容
+//   4 body   W 空格 + "正文：" + 内容           每条恰好 1 个，非空，单行
+//   5 item   W 空格 + "- " + 内容              0..n
+//   6 fence  W+2 空格 + ``` 围栏               只能在 item 内，内部原样
+// 其中 W = 编号位数 + 2（`1. ` → 3 空格，`10. ` → 4 空格）。
+// 归不进这 6 类的行一律 FAIL「未归类行」—— 这是「每一行都有定义」的机器保证。
 
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
+const EXPLAIN = process.argv.includes('--explain');
 
 // 判据：目录里有 .md 文件。
 // 注意这里**不能**只认 YYYY-MM-DD.md —— 那样「日志目录里只有 2026-10-22-补充.md」
@@ -48,13 +60,17 @@ if (!WORK_ROOT) {
 
 const OUT = join(WORK_ROOT, '_日志索引.md');
 
-console.log(`✓ 工作区：${WORK_ROOT}`);
-console.log(`  日志目录：${LOG_DIR}`);
-console.log(`  输出：${OUT}`);
+if (!EXPLAIN) {
+  console.log(`✓ 工作区：${WORK_ROOT}`);
+  console.log(`  日志目录：${LOG_DIR}`);
+  console.log(`  输出：${OUT}`);
+}
 
-// 行首无缩进的 `N. **标题**`。缩进的行不算（正文里的子列表）。
-// 不加粗不算 —— 那是格式错误，单独报出来，不静默吞掉。
-const ENTRY = /^(\d+)\.\s+\*\*(.+?)\*\*/;
+// 条目行：顶层无缩进、编号 + 可选方括号字段 + 加粗标题，**行尾不许再有任何东西**。
+// 加 `\s*$` 是 2026-10-25 的结构化改造：旧写法 `N. **标题** —— 正文` 把正文黏在
+// 标题行上，导致「标题」和「正文」在同一行里没有各自的位置。现在正文必须独立成段
+// （body 行），词法上就不可能再黏回去。
+const ENTRY = /^(\d+)\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*(.+?)\*\*\s*$/;
 // 日期标题：容忍行首空白（有人从别处复制会带前导空格）。
 const DATE_TITLE = /^\s*#\s+(\d{4}-\d{2}-\d{2})\s*$/;
 // 「看起来像条目但写法不对」：全角数字、全角句点、顿号、以及 `1.**`（缺空格）。
@@ -63,12 +79,21 @@ const DATE_TITLE = /^\s*#\s+(\d{4}-\d{2}-\d{2})\s*$/;
 const LOOSE_ENTRY = /^[０-９\d]+\s*[.．、]\s*\*\*/;
 // 代码围栏。围栏内的一切都是内容，不参与任何判定。
 const FENCE = /^\s*(?:```|~~~)/;
+// 正文段与子项的前缀。缩进宽度另校验。
+const BODY_PREFIX = /^( *)(正文：)(.*)$/;
+const ITEM_PREFIX = /^( *)- (.*)$/;
+
+// 空行只允许出现在这 5 个位置（前一个非空行 kind → 后一个非空行 kind）。
+// 每处恰好 1 个。多一个、错位置、连续两个、文件首尾 —— 全是 FAIL。
+const BLANK_OK = new Set(['date→entry', 'entry→body', 'body→item', 'body→entry', 'item→entry']);
 
 const errors = [];
 const warnings = [];
 const entries = [];
 const fixedEol = [];
 const strippedBom = [];
+const explainLines = [];
+const kindCount = { date: 0, blank: 0, entry: 0, body: 0, item: 0, fence: 0, fenceInner: 0, unclassified: 0 };
 
 // 文件名必须是 YYYY-MM-DD.md。不合规范的**不静默跳过** —— 整份日志会被吞掉，
 // 一条都不会进索引，而且什么信号都没有。判据只看「像不像日期」：完全不相关的
@@ -180,9 +205,11 @@ for (const file of files) {
   const lines = crlf.split('\n');
   // split('\n') 之后每行末尾可能带 \r（CRLF 文件），统一剥掉再匹配
   for (let i = 0; i < lines.length; i++) lines[i] = lines[i].replace(/\r$/, '');
+  // 文件末尾的那个空元素是「最后一个换行符之后」，不是一行内容
+  const tailIdx = lines.length > 0 && lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
 
-  // 校验第一行日期标题与文件名一致（自证）
-  const firstContent = lines.findIndex((l) => l.trim() !== '');
+  // 校验第一个非空行是日期标题、且与文件名一致（自证）
+  const firstContent = lines.findIndex((l, i) => i < tailIdx && l.trim() !== '');
   if (firstContent === -1) {
     errors.push(`${file}: 空文件`);
     continue;
@@ -199,54 +226,75 @@ for (const file of files) {
   // 一旦超线就会永久报警、修不掉，只会训练出对 WARN 的麻木。检索靠向量，
   // 不靠人肉控制单文件长度。
 
+  // ---- 逐行分类 ----
+  // 每个元素：{ kind, i, ... }。kindCount 顺便累计，供报告输出。
+  const kinds = new Array(tailIdx).fill('unclassified');
   let lastNum = 0;
   let lastEntryLine = -1;
   let inFence = false;
   let fenceStart = -1;
-  for (let i = 0; i < lines.length; i++) {
+  let curEntry = null; // { num, line, w, bodyCount, bodyLine, sawItem }
+
+  for (let i = 0; i < tailIdx; i++) {
     const line = lines[i];
 
     // 代码围栏：``` 或 ~~~ 之间的一切都是「给别人看的示例」，不是条目。
     // 不屏蔽的话，日志里贴一段格式示例（非常常见）就会被当成真条目收进索引 ——
     // 假阳性；围栏内缩进加粗的示例还会误报 FAIL。
+    // 注意：围栏判定必须在空行判定之前 —— 否则「先丢空行、后判围栏」会把代码块里的空行吃掉。
     if (FENCE.test(line)) {
+      kinds[i] = 'fence';
       if (inFence) {
         inFence = false;
         fenceStart = -1;
       } else {
         inFence = true;
         fenceStart = i + 1;
+        // 围栏标记行必须在 item 内，且缩进 = W+2
+        if (curEntry) {
+          const want = curEntry.w + 2;
+          const got = line.length - line.trimStart().length;
+          if (got !== want) {
+            errors.push(
+              `${file}:${i + 1} 代码围栏缩进 ${got} 空格，应为 ${want} 空格（= 编号位数 + 4，要能嵌在子项里）`,
+            );
+          }
+        } else {
+          errors.push(`${file}:${i + 1} 代码围栏不在任何条目内（围栏只能嵌在子项里）`);
+        }
       }
       continue;
     }
-    if (inFence) continue;
+    if (inFence) {
+      kinds[i] = 'fenceInner';
+      continue;
+    }
 
-    // 「概览」行是已取消的机制（见技能 §4）。它不会被索引收录，也不会被任何
-    // 检查拦住 —— 写了就等于白写，还占篇幅。
-    // 用户可能加粗（`**概览**：`），所以中间允许星号。
-    if (/^\s*\**\s*概览\s*\**\s*[:：]/.test(line)) {
-      warnings.push(`${file}:${i + 1} 出现了「概览」行（该机制已取消，扫标题就够了）`);
+    // 空行：整行长度必须为 0。只含空格/制表符的「看起来是空行」单独报 ——
+    // 它会渲染成正常空行，但逐字节比对时是脏数据，且会让人以为空行规则已满足。
+    if (line.length === 0) {
+      kinds[i] = 'blank';
+      continue;
+    }
+    if (line.trim() === '') {
+      kinds[i] = 'unclassified';
+      errors.push(`${file}:${i + 1} 空白行里带了空格或制表符（空行必须是长度 0 的真空行）`);
+      continue;
+    }
+
+    // 日期标题
+    if (DATE_TITLE.test(line)) {
+      kinds[i] = 'date';
+      continue;
     }
 
     const hit = ENTRY.exec(line);
     if (hit) {
-      // 条目之间没有空行：Markdown 渲染时两条并成一段，人读是糊的。
-      // 索引解析不受影响，所以这里是 WARN 而不是 FAIL。
-      if (lastEntryLine >= 0) {
-        let blank = false;
-        for (let j = lastEntryLine + 1; j < i; j++) {
-          if (lines[j].trim() === '') {
-            blank = true;
-            break;
-          }
-        }
-        if (!blank) {
-          warnings.push(`${file}:${i + 1} 与上一条（:${lastEntryLine + 1}）之间没有空行，渲染时会并成一段`);
-        }
-      }
-      lastEntryLine = i;
-
+      kinds[i] = 'entry';
       const num = Number(hit[1]);
+      const w = hit[1].length + 2;
+      curEntry = { num, line: i, w, bodyCount: 0, bodyLine: -1, sawItem: false };
+
       // 三种情形分开说。原来只有一句「从 X 跳到 Y（缺 N 条）」，遇重复编号会算出
       // 「缺 -1 条」、遇倒序算出「缺 -2 条」—— 负数，说不通，也就没人会去修。
       if (num === lastNum) {
@@ -257,44 +305,127 @@ for (const file of files) {
         warnings.push(`${file}:${i + 1} 编号从 ${lastNum} 跳到 ${num}（缺 ${num - lastNum - 1} 条）`);
       }
       lastNum = Math.max(lastNum, num);
+      lastEntryLine = i;
       entries.push({ date: dateFromName, file, line: i + 1, num, title: hit[2].trim() });
-
-      // 标题后没有正文：写日志时断行了，正文被挤到下一行或整段丢了。
-      // 只报「标题行剩下的部分」和「后续行」都没有内容的情形 —— 标题独占一行、
-      // 正文用缩进子项接着写是合法写法，不算。
-      const rest = line.slice(hit[0].length).trim();
-      if (rest === '' || /^[—–\-:：]+$/.test(rest)) {
-        let hasBody = false;
-        for (let j = i + 1; j < lines.length; j++) {
-          const next = lines[j];
-          if (next.trim() === '') continue;
-          if (DATE_TITLE.test(next)) break;
-          if (ENTRY.test(next)) break;
-          // 非条目的任意内容（缩进子项、续行）都算正文
-          hasBody = true;
-          break;
-        }
-        if (!hasBody) {
-          warnings.push(
-            `${file}:${i + 1} 第 ${num} 条「${hit[2].trim()}」标题后没有正文（可能写日志时断行，正文被吞了）`,
-          );
-        }
-      }
       continue;
     }
 
-    // 像条目但写法不规范：全角数字、全角句点、顿号、或缺空格。
+    // 正文段：缩进必须恰好 W，内容必须非空，每条最多一个，且必须在任何 item 之前。
+    const bm = BODY_PREFIX.exec(line);
+    if (bm) {
+      const indent = bm[1].length;
+      if (!curEntry) {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 「正文：」出现在任何条目之前`);
+        continue;
+      }
+      if (indent !== curEntry.w) {
+        kinds[i] = 'unclassified';
+        errors.push(
+          `${file}:${i + 1} 正文段缩进 ${indent} 空格，应为 ${curEntry.w} 空格（第 ${curEntry.num} 条是 ${String(curEntry.num).length} 位编号）`,
+        );
+        continue;
+      }
+      if (bm[3].trim() === '') {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 正文段是空的（第 ${curEntry.num} 条）：\`正文：\` 后面必须写内容`);
+        continue;
+      }
+      if (curEntry.bodyCount > 0) {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 第 ${curEntry.num} 条有第二个正文段（每条只能有一个）`);
+        continue;
+      }
+      if (curEntry.sawItem) {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 第 ${curEntry.num} 条的正文段出现在子项之后（应紧跟条目行）`);
+        continue;
+      }
+      kinds[i] = 'body';
+      curEntry.bodyCount++;
+      curEntry.bodyLine = i;
+      continue;
+    }
+
+    // 子项：缩进必须恰好 W。
+    const im = ITEM_PREFIX.exec(line);
+    if (im) {
+      const indent = im[1].length;
+      if (!curEntry) {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 子项出现在任何条目之前`);
+        continue;
+      }
+      if (indent !== curEntry.w) {
+        kinds[i] = 'unclassified';
+        errors.push(
+          `${file}:${i + 1} 子项缩进 ${indent} 空格，应为 ${curEntry.w} 空格（第 ${curEntry.num} 条是 ${String(curEntry.num).length} 位编号；缩进不对会让 Markdown 从此处断开列表）`,
+        );
+        continue;
+      }
+      if (im[2].trim() === '') {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 子项是空的（第 ${curEntry.num} 条）：\`- \` 后面必须写内容`);
+        continue;
+      }
+      if (curEntry.bodyCount === 0) {
+        kinds[i] = 'unclassified';
+        errors.push(`${file}:${i + 1} 第 ${curEntry.num} 条先出现子项、后补正文（正文段必须紧跟条目行）`);
+        continue;
+      }
+      kinds[i] = 'item';
+      curEntry.sawItem = true;
+      continue;
+    }
+
+    // 「概览」行是已取消的机制（见技能 §4）。它不会被索引收录，也不会被任何
+    // 检查拦住 —— 写了就等于白写，还占篇幅。
+    // 用户可能加粗（`**概览**：`），所以中间允许星号。
+    if (/^\s*\**\s*概览\s*\**\s*[:：]/.test(line)) {
+      warnings.push(`${file}:${i + 1} 出现了「概览」行（该机制已取消，扫标题就够了）`);
+    }
+
+    // ---- 以下是「知道你想写条目，但写法不对」的各种形态，各给一句人话 ----
+
+    // 行首无缩进的 `N. `：细分四种，别混成一句「条目未加粗」。
+    // 这一段必须排在 LOOSE_ENTRY 之前 —— LOOSE_ENTRY 的 `\s*` 会连正确的
+    // `6. **标题** 多余内容` 一起吞掉，于是报出「写法不规范」这种误导的话。
+    if (/^\d+\.\s/.test(line)) {
+      // ① 正文还黏在标题行上 —— 2026-10-25 改造前的写法
+      if (/^\d+\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*.+\*\*\s*——/.test(line)) {
+        errors.push(
+          `${file}:${i + 1} 正文还写在标题行上（\` —— \` 之后的部分）。正文段要另起一行，缩进 ${String(line.match(/^\d+/)[0].length + 2)} 空格写 \`正文：…\``,
+        );
+        continue;
+      }
+      // ② 方括号字段不合法（缺 `=` 或 key 不是小写）
+      if (/^\d+\.\s+\[/.test(line) && /^\d+\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*/.test(line) === false) {
+        errors.push(
+          `${file}:${i + 1} 条目行的方括号字段不合法（应为 \`[小写key=值]\`，可多个，如 \`[time=14:32:05]\`）：${line.trim().slice(0, 60)}`,
+        );
+        continue;
+      }
+      // ③ 加了粗但尾部还有别的内容（标题已闭合，后面又写了字）
+      if (/^\d+\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*.+\*\*/.test(line)) {
+        errors.push(
+          `${file}:${i + 1} 条目行标题后面还有内容（条目行只能是 \`N. [字段…] **标题**\`，多余的话挪到正文段或子项）：${line.trim().slice(0, 60)}`,
+        );
+        continue;
+      }
+      // ④ 真的没加粗
+      errors.push(`${file}:${i + 1} 条目未加粗，索引会漏掉：${line.slice(0, 60)}`);
+      continue;
+    }
+
+    // 像条目但写法不规范：全角数字、全角句点、顿号、以及 `1.**`（缺空格）。
     // ENTRY 一个都匹配不上，于是**完全静默**（exit 0、索引 0 条、零提示）。
     // 这是最坏形态，必须指名道姓地报出来。
-    if (LOOSE_ENTRY.test(line)) {
+    // 注意正则里的 `\s*` 只在「点号后直接接 `**`」时才危险 —— 上面那段已经把所有
+    // 「点号 + 空格」的情形接走了，能走到这里的 `\s*` 只可能是 `1.  **`（两个空格）。
+    if (/^[０-９\d]+[.．、]\*{0,2}/.test(line) && LOOSE_ENTRY.test(line)) {
       errors.push(
         `${file}:${i + 1} 条目写法不规范（编号用半角数字 + 半角小数点 + 空格），索引会漏掉：${line.trim().slice(0, 60)}`,
       );
-      continue;
-    }
-    // 行首无缩进的 `N. ` 但没加粗 —— 格式错误
-    if (/^\d+\.\s+/.test(line)) {
-      errors.push(`${file}:${i + 1} 条目未加粗，索引会漏掉：${line.slice(0, 60)}`);
       continue;
     }
     // 缩进的 `N. **标题**` —— 比不加粗更隐蔽：ENTRY 匹配行首，缩进行不命中，
@@ -304,7 +435,18 @@ for (const file of files) {
       errors.push(
         `${file}:${i + 1} 缩进的条目加了粗（缩进子项不要加粗，用 "-"，否则这条会静默消失）：${line.trim().slice(0, 60)}`,
       );
+      continue;
     }
+
+    // 走到这里说明归不进 6 类里的任何一类 —— 这就是「未归类行」FAIL。
+    // 它是本设计的核心保证：只要生成器 exit 0，日志里每一行就都有明确定义。
+    // 报错前先把「这一行大概想干什么」给出来，否则人只知道错了、不知道往哪改。
+    const shown = line.trim().slice(0, 70);
+    let guess = '';
+    if (/^\s*正文/.test(line)) guess = '　（想在正文段写，但「正文：」前有缩进以外的东西，或冒号用了半角）';
+    else if (/^\s*[-*+]\s/.test(line)) guess = '　（像子项，但缩进不等于所属条目的编号位数 + 2）';
+    else if (/^\s{2,}/.test(line)) guess = '　（有缩进但既不是正文段也不是子项）';
+    errors.push(`${file}:${i + 1} 未归类行（既不是日期标题 / 空行 / 条目 / 正文段 / 子项 / 围栏）：${shown}${guess}`);
   }
 
   // 围栏没闭合：剩下的半个文件全被当成代码，条目一条都收不进来。
@@ -313,19 +455,87 @@ for (const file of files) {
     warnings.push(`${file}:${fenceStart} 代码围栏没有闭合，往后的条目全被跳过`);
   }
 
-  // 每条的字数（整条口径：编号 + 标题 + 正文，不含条目之间的空行）。
-  // 这里只**统计并报告**，不判定 —— 见下面 TIER_* 处的说明。
-  // 条目在 entries 里是按文件连续追加的，所以本文件的条目就是那段切片，
-  // 每条的范围一直延伸到下一条的上一行。
+  // ---- 每条必须有恰好一个正文段 ----
+  // 正文段把「这条讲了什么」从标题行解放出来。缺了它就是旧写法（正文黏在标题上），
+  // 多了就是同一件事写了两遍。两种都要报 —— 缺了不报等于新规则形同虚设。
   const mine = entries.slice(firstEntryIdx);
   for (let k = 0; k < mine.length; k++) {
-    const from = mine[k].line - 1;
-    const to = k + 1 < mine.length ? mine[k + 1].line - 1 : lines.length;
-    mine[k].chars = lines.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
+    const e = mine[k];
+    const from = e.line - 1;
+    const to = k + 1 < mine.length ? mine[k + 1].line - 1 : tailIdx;
+    let bodyFound = -1;
+    for (let j = from + 1; j < to; j++) {
+      if (kinds[j] === 'body') {
+        bodyFound = j;
+        break;
+      }
+    }
+    if (bodyFound === -1) {
+      errors.push(`${file}:${e.line} 第 ${e.num} 条「${e.title}」没有正文段（条目行下面要缩进写一行 \`正文：…\`）`);
+    }
+    // 每条的字数（整条口径：编号 + 标题 + 正文 + 子项，含条目内部的空行，不含条目之间的空行）。
+    // 这里只**统计并报告**，不判定 —— 见下面 TIER_* 处的说明。
+    e.chars = lines.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
+  }
+
+  // ---- 空行位置校验（只允许那 5 个位置，每处恰好 1 个）----
+  // 判定用「前一个非空且已归类的行」和「后一个非空且已归类的行」——
+  // 未归类行的身份本来就未定，拿它去判空行位置只会连出一串假报。
+  for (let i = 0; i < tailIdx; i++) {
+    if (kinds[i] !== 'blank') continue;
+    if (i === 0) {
+      errors.push(`${file}:1 文件开头的空行（首部不许有空行）`);
+      continue;
+    }
+    if (i === tailIdx - 1) {
+      errors.push(`${file}:${i + 1} 文件末尾的空行（尾部不许有空行）`);
+      continue;
+    }
+    if (kinds[i - 1] === 'blank') {
+      errors.push(`${file}:${i + 1} 连续空行（两个空行会渲染成段间大缝隙，只许一个）`);
+      continue;
+    }
+    if (kinds[i + 1] === 'blank') continue; // 由上面那条报，这里不重复
+
+    let prevKind = null;
+    for (let j = i - 1; j >= 0; j--) {
+      if (kinds[j] === 'blank' || kinds[j] === 'unclassified') continue;
+      prevKind = kinds[j];
+      break;
+    }
+    let nextKind = null;
+    for (let j = i + 1; j < tailIdx; j++) {
+      if (kinds[j] === 'blank' || kinds[j] === 'unclassified') continue;
+      nextKind = kinds[j];
+      break;
+    }
+    // 前后有一边未归类：未归类行自己已经报过 FAIL，这里不再叠加
+    if (prevKind === null || nextKind === null) continue;
+    const pair = `${prevKind}→${nextKind}`;
+    if (!BLANK_OK.has(pair)) {
+      errors.push(
+        `${file}:${i + 1} 空行位置不对（${prevKind} → ${nextKind}）。空行只允许在这 5 处：日期标题后、条目行后、正文段后（接子项或下一条）、最后一个子项后`,
+      );
+    }
+  }
+
+  // 行类型累计（跨文件）
+  for (let i = 0; i < tailIdx; i++) kindCount[kinds[i]]++;
+
+  if (EXPLAIN) {
+    explainLines.push(`${file}`);
+    for (let i = 0; i < tailIdx; i++) {
+      let tag = '';
+      if (kinds[i] === 'entry') {
+        const e = entries.find((x) => x.file === file && x.line === i + 1);
+        if (e) tag = `  #${e.num} ${e.title.slice(0, 40)}`;
+      }
+      explainLines.push(`  ${String(i + 1).padStart(5)}  ${kinds[i].padEnd(13)}${tag}`);
+    }
   }
 }
 
-// 三档详略的字数边界。技能正文 §2.7 写的是同一组数字 —— 改一处必须改两处，
+// 三档详略的字数边界。技能正文 §2.3 写的是同一组数字 —— 改一处必须改两处，
 // 没有第二份定义（这里算，正文只是照抄给模型看）。
 const TIER_A_MAX = 600;
 const TIER_C_MIN = 1501;
@@ -354,6 +564,18 @@ const median = (arr) => {
   const m = s.length >> 1;
   return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
 };
+
+// --explain：只报行类型归属，不写索引
+if (EXPLAIN) {
+  for (const l of explainLines) console.log(l);
+  console.log(`\n行类型合计：${Object.entries(kindCount).map(([k, v]) => `${k} ${v}`).join(' / ')}`);
+  if (errors.length) {
+    console.log(`\nFAIL ${errors.length}`);
+    for (const e of errors) console.log(`  ${e}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 // 按日期分组（日期降序，最新在前）
 const byDate = new Map();
@@ -421,6 +643,9 @@ if (entries.length) {
         `，单条中位 ${median(latest.map((e) => e.chars))} 字符`,
     );
   }
+  console.log(
+    `  行类型：${Object.entries(kindCount).map(([k, v]) => `${k} ${v}`).join(' / ')}`,
+  );
 }
 if (fixedEol.length) {
   console.log(`  行尾修正为 CRLF：${fixedEol.join('、')}`);
