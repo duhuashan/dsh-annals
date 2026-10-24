@@ -114,6 +114,7 @@ if (baseCase === 'B') {
 for (const file of files) {
   const dateFromName = basename(file, '.md');
   const fullPath = join(LOG_DIR, file);
+  const firstEntryIdx = entries.length;
 
   // 文件名校验：形状对 `\d{4}-\d{2}-\d{2}` 之外，还要真的是个日期。
   // 2026-13-45.md 这种「形状合法但日期不存在」的，静默收进索引毫无意义。
@@ -311,7 +312,48 @@ for (const file of files) {
   if (inFence) {
     warnings.push(`${file}:${fenceStart} 代码围栏没有闭合，往后的条目全被跳过`);
   }
+
+  // 每条的字数（整条口径：编号 + 标题 + 正文，不含条目之间的空行）。
+  // 这里只**统计并报告**，不判定 —— 见下面 TIER_* 处的说明。
+  // 条目在 entries 里是按文件连续追加的，所以本文件的条目就是那段切片，
+  // 每条的范围一直延伸到下一条的上一行。
+  const mine = entries.slice(firstEntryIdx);
+  for (let k = 0; k < mine.length; k++) {
+    const from = mine[k].line - 1;
+    const to = k + 1 < mine.length ? mine[k + 1].line - 1 : lines.length;
+    mine[k].chars = lines.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
+  }
 }
+
+// 三档详略的字数边界。技能正文 §2.7 写的是同一组数字 —— 改一处必须改两处，
+// 没有第二份定义（这里算，正文只是照抄给模型看）。
+const TIER_A_MAX = 600;
+const TIER_C_MIN = 1501;
+const tierOf = (chars) => (chars <= TIER_A_MAX ? 'A' : chars < TIER_C_MIN ? 'B' : 'C');
+
+// 只统计、不判定。2026-10-22 曾取消过一条 20,000 字符的长度 WARN，理由是
+// 「长度不是质量的判据，且历史文件一旦超线就永久报警、修不掉，只会训练出对
+// WARN 的麻木」。那个理由现在仍然成立：全库 58 条 C 档里真正写明「细节在哪份
+// 文档」的只有 2 条，一旦改成检查就是 56 条永远修不掉的报警，而日志又不许
+// 回头改。所以这里输出的是**分布**，让人看见偏移，而不是**报警**，逼人删字。
+const tierCount = { A: 0, B: 0, C: 0 };
+const tierChars = { A: 0, B: 0, C: 0 };
+for (const e of entries) {
+  const t = tierOf(e.chars);
+  tierCount[t]++;
+  tierChars[t] += e.chars;
+}
+// 最近一天 = 文件名日期最大的那天，也就是刚写完的那天。
+const latestDate = [...new Set(entries.map((e) => e.date))].sort().pop();
+const latest = entries.filter((e) => e.date === latestDate);
+const latestTier = { A: 0, B: 0, C: 0 };
+for (const e of latest) latestTier[tierOf(e.chars)]++;
+const median = (arr) => {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+};
 
 // 按日期分组（日期降序，最新在前）
 const byDate = new Map();
@@ -365,6 +407,21 @@ try {
 // 报告
 const chars = out.join('\n').length;
 console.log(`✓ ${files.length} 个文件 / ${dates.length} 天 / ${entries.length} 条 → _日志索引.md（${chars} 字符）`);
+if (entries.length) {
+  const total = tierChars.A + tierChars.B + tierChars.C;
+  const pct = (n) => (total ? ((n / total) * 100).toFixed(1) : '0.0');
+  console.log(
+    `  详略（全库）：A ${tierCount.A} / B ${tierCount.B} / C ${tierCount.C}` +
+      `，字数 A ${pct(tierChars.A)}% / B ${pct(tierChars.B)}% / C ${pct(tierChars.C)}%` +
+      `，单条中位 ${median(entries.map((e) => e.chars))} 字符`,
+  );
+  if (latest.length) {
+    console.log(
+      `  详略（${latestDate.slice(5)}）：A ${latestTier.A} / B ${latestTier.B} / C ${latestTier.C}` +
+        `，单条中位 ${median(latest.map((e) => e.chars))} 字符`,
+    );
+  }
+}
 if (fixedEol.length) {
   console.log(`  行尾修正为 CRLF：${fixedEol.join('、')}`);
 }
