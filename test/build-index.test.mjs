@@ -383,6 +383,45 @@ test('空行里带空格 FAIL', () => {
   assert.match(r.out, /空白行里带了空格或制表符/);
 });
 
+// 「只允许」不等于「必须出现」：上面几条查的都是「空行放错了地方」，
+// 一个空行都不写反而全部通过 —— 那样 Markdown 会把正文并进标题，结构当场失效。
+// 这四条补的是反向检查：该有的空行必须有。
+
+test('缺空行 FAIL：条目行紧接正文段', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /缺空行（entry → body/);
+});
+
+test('缺空行 FAIL：正文段紧接子项', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n   - 子项\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /缺空行（body → item/);
+});
+
+test('缺空行 FAIL：日期标题紧接第 1 条', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n1. **甲**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /缺空行（date → entry/);
+});
+
+test('缺空行 FAIL：最后一个子项紧接下一条', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n   - 子项\n2. **乙**\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /缺空行（item → entry/);
+});
+
+test('空行齐全时不报缺空行（反向检查不误报）', () => {
+  const ws = caseWs({ [`${DAY}.md`]: log(e(1, '**甲**', '正文。', '子项'), e(2, '**乙**', '正文。')) });
+  const r = run(ws);
+  assert.equal(r.code, 0, r.out);
+  assert.doesNotMatch(r.out, /缺空行/);
+});
+
 // ── BOM ─────────────────────────────────────────────────────
 
 test('UTF-8 BOM 被剥离且不误报日期标题', () => {
@@ -489,6 +528,27 @@ test('日期标题与文件名不一致 FAIL', () => {
   const r = run(ws);
   assert.equal(r.code, 1);
   assert.match(r.out, /不一致/);
+});
+
+// 文件中间第二个日期标题：原来无条件接受，索引里那些条目还全被记在前一天日期下，
+// 日期标题变成纯装饰物 —— 写错了没人知道，写对了也没有任何作用。
+test('文件中间出现第二个日期标题 FAIL', () => {
+  const ws = caseWs({
+    [`${DAY}.md`]: `# ${DAY}\n\n1. **甲**\n\n   正文：正文。\n\n# 2026-10-23\n\n2. **乙**\n\n   正文：正文。\n`,
+  });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /第二个日期标题/);
+});
+
+test('空标题 FAIL：只有空白也算空', () => {
+  const ws = caseWs({ [`${DAY}.md`]: `# ${DAY}\n\n1. **   **\n\n   正文：正文。\n` });
+  const r = run(ws);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /标题是空的/);
+  // 一个错只报一条：不能连带出「正文：出现在任何条目之前」或空行位置不对
+  assert.doesNotMatch(r.out, /出现在任何条目之前/);
+  assert.doesNotMatch(r.out, /空行位置不对/);
 });
 
 test('2026-13-45.md 会 FAIL', () => {

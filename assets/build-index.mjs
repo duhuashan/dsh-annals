@@ -282,17 +282,43 @@ for (const file of files) {
       continue;
     }
 
-    // 日期标题
+    // 日期标题：每个文件只能有一个，且必须是第一条内容。
+    // 原来这里任何位置都无条件接受，于是文件中间插一个 `# 2026-10-23` 既不报错，
+    // 索引里那些条目还全被记在前一天的日期下（entries.push 只按文件名取 date）——
+    // 日期标题成了一个纯装饰物：写错了没人知道，写对了也没有任何作用。
     if (DATE_TITLE.test(line)) {
+      if (i !== firstContent) {
+        kinds[i] = 'unclassified';
+        errors.push(
+          `${file}:${i + 1} 文件中间出现第二个日期标题（每个文件只能有一个，就是第 ${firstContent + 1} 行）`,
+        );
+        continue;
+      }
       kinds[i] = 'date';
       continue;
     }
 
     const hit = ENTRY.exec(line);
     if (hit) {
-      kinds[i] = 'entry';
       const num = Number(hit[1]);
       const w = hit[1].length + 2;
+      // 标题只有空白：`(.+?)` 允许纯空格，`trim()` 之后就成空串，索引里会多出一条
+      // 「- 10-22   · 日志\2026-10-22.md:3」—— 一条没有标题的条目。
+      // 真空 `****` 反而进不来（被 `\s*$` 挡下、落到「条目未加粗」那条），所以只查这一种。
+      // 注意这里不能 `continue` 掉整个条目，也不能把 kinds 标成 unclassified：
+      // 它结构上仍然是个条目行（正文字项都挂在它下面），标错了会让空行校验取不到
+      // 前一个 kind，连带报一串「空行位置不对」，从一个错变三个错。
+      const title = hit[2].trim();
+      if (title === '') {
+        errors.push(
+          `${file}:${i + 1} 第 ${num} 条标题是空的（\`**\` 之间必须写内容，否则索引里是一条没有标题的条目）`,
+        );
+        kinds[i] = 'entry';
+        curEntry = { num, line: i, w, bodyCount: 0, bodyLine: -1, sawItem: false };
+        lastEntryLine = i;
+        continue;
+      }
+      kinds[i] = 'entry';
       curEntry = { num, line: i, w, bodyCount: 0, bodyLine: -1, sawItem: false };
 
       // 三种情形分开说。原来只有一句「从 X 跳到 Y（缺 N 条）」，遇重复编号会算出
@@ -306,7 +332,7 @@ for (const file of files) {
       }
       lastNum = Math.max(lastNum, num);
       lastEntryLine = i;
-      entries.push({ date: dateFromName, file, line: i + 1, num, title: hit[2].trim() });
+      entries.push({ date: dateFromName, file, line: i + 1, num, title });
       continue;
     }
 
@@ -517,6 +543,22 @@ for (const file of files) {
         `${file}:${i + 1} 空行位置不对（${prevKind} → ${nextKind}）。空行只允许在这 5 处：日期标题后、条目行后、正文段后（接子项或下一条）、最后一个子项后`,
       );
     }
+  }
+
+  // ---- 反过来：该有空行的地方必须有 ----
+  // 上面那圈只遍历 blank 行，于是「只允许」被读成了「只要出现就合法」——
+  // 一条都不写反而全部通过。实测后果：条目行紧接正文段时 marked 把正文并进标题的
+  // 同一个 text token（`text → space → list`，而不是 `text → space → text → space → list`），
+  // 「正文段」这个结构当场失效，而生成器一声不响。
+  // 判据与上面完全对称：相邻两行若是 BLANK_OK 里的组合，中间必须恰好一个空行。
+  for (let i = 0; i + 1 < tailIdx; i++) {
+    if (kinds[i] === 'blank' || kinds[i] === 'unclassified') continue;
+    if (kinds[i + 1] === 'blank' || kinds[i + 1] === 'unclassified') continue;
+    const pair = `${kinds[i]}→${kinds[i + 1]}`;
+    if (!BLANK_OK.has(pair)) continue;
+    errors.push(
+      `${file}:${i + 2} 缺空行（${kinds[i]} → ${kinds[i + 1]} 之间必须有恰好一个空行，现在一个都没有）。该有的空行不是可有可无：少了它 Markdown 会把下一行并进上一块，结构当场失效`,
+    );
   }
 
   // 行类型累计（跨文件）
