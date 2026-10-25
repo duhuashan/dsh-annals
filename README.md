@@ -4,7 +4,7 @@
 
 把「每天一个日志文件 + 自动索引 + git 版本记录」装进一条命令：技能、规矩、提醒、初始化一次给齐。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.3.0 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.4.0 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
 
 ## 解决什么问题
 
@@ -16,7 +16,7 @@
 
 这个插件把三件事装进一个包，并补上第四件：一次初始化。
 
-## 四件事
+## 能力一览
 
 | 能力 | 机制 | 为什么这样 |
 |---|---|---|
@@ -25,6 +25,8 @@
 | 轮次提醒 | `agent/turn-stopping` 里 `agent.steer()`，判据是轮首/轮尾的工作区快照 | 官方契约：turns 即将关闭时 steer 必定再跑一步，模型当场补写 |
 | 索引新鲜度提醒 | 同上，`turn-stopping` 里比对 mtime | 防「写了日志就以为完事」—— 索引是生成物，不跑生成器就永远停在旧快照 |
 | 初始化 | `worklog_init` 工具 | 一次建好 日志\\、生成器、git、状态文件；已存在的文件绝不覆盖 |
+| 检索历史 | `worklog_query` 工具 | 按内容找：忘了一件事在哪，用关键词捞 |
+| 双向链接 | `worklog_links` 工具 | 按关系找：知道是哪一条，看它引了谁、谁引了它 |
 
 ## 初始化：三态
 
@@ -72,6 +74,7 @@
 | `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） |
 | `initTool` | `true` | 注册 `worklog_init` 工具 |
 | `queryTool` | `true` | 注册 `worklog_query` 工具（检索历史日志） |
+| `linksTool` | `true` | 注册 `worklog_links` 工具（日志条目的双向链接） |
 | `probe` | `true` | 漏查探测：只记到 `.dsh\worklog-probe.jsonl`，不注入、不打扰 |
 | `skipSubagents` | `true` | 子代理会话不提醒 |
 
@@ -100,12 +103,56 @@ GUI 保存立即生效；改 `cordis.patch.yml` 后需重启 DSH。
 
 **依赖**：唯一运行时依赖是 `@deepseek-ai/schemastery`（只用于配置 schema）。从 tarball / npm 安装时 pnpm 会随包自动装；`link:` 安装不会装依赖，需在插件目录备好 `node_modules/@deepseek-ai/schemastery`。
 
-## 安装
+## 双向链接（`worklog_links`）
 
-从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载 `dsh-worklog-0.3.0.tgz`，然后：
+`worklog_query` 是**按内容找**（忘了一件事在哪，用关键词捞），`worklog_links` 是**按关系找**（知道是哪一条，看它连着谁）。两个方向：
+
+| 方向 | 回答的问题 | 什么时候用 |
+|---|---|---|
+| **出链**（`out`） | 这一条引用了谁 | 读到一个结论想追「它是从哪来的」；改某个文件前想知道「这条当时引了哪几处」 |
+| **入链**（`in`） | 谁引用了它 | 改文件之前先看「以前有哪些条目碰过它、当时怎么说的」；要动一条旧日志，先确认有没有别处指着它 |
+
+### `target` 的三种写法
+
+```
+worklog_links({ target: "日志\2026-10-23.md" })              // 整个文件
+worklog_links({ target: "日志\2026-10-23.md 第 10 条" })      // 只这一条
+worklog_links({ target: "tools\check-refs.mjs" })            // 任意工作区文件，必须写全路径
+```
+
+裸日期（`2026-10-23.md`）会自动补成 `日志\` 前缀 —— 这个形态在工作区里唯一，猜错概率为零。其他文件**必须写全路径**：全库有四个 `说明.md`，只报文件名等于让工具替你猜。
+
+### 三条设计取舍
+
+- **入链只扫日志**。引用来源固定是 `日志\*.md`，不遍历其他文档。理由是日志是**只增不改**的，而工作区文档会变 —— 让一个会变的集合当引用来源，反查结果就会随时间漂移。
+- **出链只认反引号里的路径**。`` `tools\check-refs.mjs` `` 算引用，裸写的路径不算。日志里大量出现 `` `git status` ``、`wroteLog` 这类东西，靠「有没有反斜杠」判断会把命令和标识符全当成引用，所以用**扩展名白名单**（`.md`/`.mjs`/`.js`/`.json`/`.py`/`.txt`/`.ps1`/…）卡一道。
+- **日志之间互相引用也要写「第 N 条」**。只写文件名，条目级入链永远查不到它 —— 工具会把「全库还有多少处只写了文件名」打在末尾提醒你。
+
+### 排序与不猜
+
+- **出链里日志排在普通文件前面** —— 日志引用是「还能继续往下追」的活链接，文件引用到此为止。
+- **入链里精确写了条目号的排前面**，范围引用（`第 38–56 条`）次之，只写文件名的最后。
+- **裸名不猜**。引用里只写 `说明.md` 而全库有四个同名时，工具**标出「指向不明」并列候选，不计入命中数** —— 宁可少算一处，也不悄悄把四个文件的引用混在一起（那个 bug 曾经让一个查询的数量从 20 条悄悄变成 33 条，且不报错）。
+- **不校验引用是否还有效**。日志是历史快照，当时确实存在就够了；报「失效」只会让历史记录显得像错误。
+
+### 命令行
+
+不依赖 AI 也能查，脚本在 `tools\` 下（逻辑仍是 import 插件里的 `lib/links.js`，不复制一份）：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-worklog-0.3.0.tgz
+node tools\worklog-links.mjs "日志\2026-10-24.md 第 12 条"
+node tools\worklog-links.mjs "tools\check-refs.mjs" --in
+node tools\worklog-links.mjs "日志\2026-10-22.md" --out
+```
+
+退出码：查到 → `0`（**查不到也是 `0`**，那是正常结果）；参数或环境问题 → `1`。
+
+## 安装
+
+从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载 `dsh-worklog-0.4.0.tgz`，然后：
+
+```powershell
+dsh plugin --profile web add C:\path\to\dsh-worklog-0.4.0.tgz
 ```
 
 开发时也可以从源码目录链进去（依赖不会自动装，需自备 `schemastery`）：
@@ -127,8 +174,9 @@ dsh plugin --profile web remove dsh-worklog
 ## 测试
 
 ```powershell
-node --test test/offline.mjs            # 82 个离线用例（另 2 个 skip 标记的已知缺陷，mock 服务）
-node --test test/build-index.test.mjs   # 29 个生成器端到端用例（真实临时目录 + 真实子进程）
+node --test test/offline.mjs            # 103 个离线用例（另 2 个 skip 标记的已知缺陷，mock 服务）
+node --test test/build-index.test.mjs   # 77 个生成器端到端用例（真实临时目录 + 真实子进程）
+node --test test/links.test.mjs         # 75 个双向链接用例（纯函数 + 临时工作区夹具）
 node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模拟 fs-sandbox 拒绝默认策略、验证初始化全部写入成功、再跑生成器
 ```
 
@@ -161,3 +209,6 @@ node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端：模�
 - **提醒不显示在 GUI 对话流里**。提醒是通过 `agent.steer()` 注入给模型的 user 侧消息，不是对话气泡；GUI 会话里看不到它，模型会在思考/工具调用之间收到并处理。判断提醒是否发生，看会话记录里的 `source.kind === "worklog"` 消息，或从下一轮行为反推。
 - **日志目录名固定为 `日志`**。插件按 `日志\build-index.mjs`、`日志\YYYY-MM-DD.md` 定位，改名（如 `logs`）会被判为「未启用」，需要重新初始化。
 - **已拒绝只停主动询问，不锁死**。`worklog_init(enabled=false)` 写拒绝记录后插件完全静默（不询问、不提醒）；用户反悔时 `worklog_init(enabled=true)` 照常初始化，一次建齐全套（已在空工作区实测先拒后立）。
+- **出链会截断带空格的 Windows 目录名**。`` `D:\Program Files\DSH\DSH.exe` `` 被解析成 `Files\DSH\DSH.exe` —— 反引号内的路径没有引号可配对，按空格取「最后一个带扩展名的片段」时会把前面的目录丢掉。实测全库 1292 处反引号引用里只有 2 处，为此引入带引号路径的解析会与「反引号内可以是命令」的现状打架（`` `node 日志\build-index.mjs` `` 有空格但不是路径），不值得。**要精确引用，别让路径里带空格。**
+- **`worklog_links` 不校验引用是否还有效**。日志是历史快照，当时确实存在就够了。代价：文件改名或删除后，反查仍会列出那些引用，读的时候要自己留意。
+- **裸名不猜上限 8 条**。入链查一个全库重名的文件（如 `说明.md` 有四个）时，只在**没有正经命中**的情况下逐条列「指向不明」的疑似条目，最多 8 条；有正经命中时只报总数。防的是把真正的 1 条淹在 14 条历史裸引用里。
