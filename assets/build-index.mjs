@@ -27,6 +27,26 @@
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// 词法定义只有一份，在 log-parse.mjs —— 检索、看板、一致性测试都读同一份。
+// 这里 import 而不是抄一遍：抄的那份改格式时不会喊，只会静默解析出 0 条。
+import {
+  ENTRY,
+  TIME_FIELD,
+  TIME_SHAPE,
+  TIER_FIELD,
+  TIER_SHAPE,
+  TIER_A_MAX,
+  TIER_B_MAX,
+  tierOf,
+  secOf,
+  DATE_TITLE,
+  LOOSE_ENTRY,
+  FENCE,
+  BODY_PREFIX,
+  ITEM_PREFIX,
+  BLANK_OK,
+  lightKinds,
+} from './log-parse.mjs';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 const EXPLAIN = process.argv.includes('--explain');
@@ -81,52 +101,9 @@ if (!EXPLAIN) {
   if (!DO_FIX) console.log(`  模式：${NO_FIX ? '--no-fix' : '--explain'}（只读，不改日志文件）`);
 }
 
-// 条目行：顶层无缩进、编号 + 可选方括号字段 + 加粗标题，**行尾不许再有任何东西**。
-// 加 `\s*$` 是 2026-10-25 的结构化改造：旧写法 `N. **标题** —— 正文` 把正文黏在
-// 标题行上，导致「标题」和「正文」在同一行里没有各自的位置。现在正文必须独立成段
-// （body 行），词法上就不可能再黏回去。
-const ENTRY = /^(\d+)\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*(.+?)\*\*\s*$/;
-// 写入时刻：2026-10-25 起必填，永远第一个字段。只认零填充的 `HH:MM:SS` ——
-// 不做「9:05」这类宽松解析：生成器补不了真实时刻，所以宁可 FAIL 让人重取一次，
-// 也不要吞进一个半懂的值。日期不进字段（文件名已经给了，写两处就是两个真源）。
-const TIME_FIELD = /\[time=([^\]]*)\]/;
-const TIME_SHAPE = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
-// 详略档位：2026-10-25 起必填，紧跟 [time=] 之后。只认大写 A / B / C ——
-// 索引里显示的就是 [A]，两处大小写不一致会让人以为索引错了。
-// 它记的是**动笔前的声明**（这条我打算写多细），不是写完量出来的标签；
-// 但声明必须与实测一致（见 TIER_A_MAX / TIER_B_MAX），否则档位就成了
-// 「想写多长写多长」的橡皮图章。
-const TIER_FIELD = /\[tier=([^\]]*)\]/;
-const TIER_SHAPE = /^[ABC]$/;
-// 三档详略的字数边界。技能正文 §2.3 写的是同一组数字 —— 改一处必须改两处，
-// 没有第二份定义（这里算，正文只是照抄给模型看）。
-// 两个都是**上限**，比较符都用 `<=`：原来写成 A_MAX 600 / C_MIN 1501，一个配 `<=`
-// 一个配 `<`，读的人得在脑子里换算一次才敢确认边界到底落在 1500 还是 1501。
-//
-// 口径（2026-10-25 起）：只算**正文段行 + 子项行 + 围栏内行**，不算编号、方括号字段、
-// 标题、条目内空行。原来按整条算，于是「加了 [time=] 那 17 个字符」本身就能把条目
-// 推过 600 —— 实测 3 条因此跨档。骨架不该参与「这条写了多少东西」的度量。
-const TIER_A_MAX = 600;
-const TIER_B_MAX = 1500;
-const tierOf = (chars) => (chars <= TIER_A_MAX ? 'A' : chars <= TIER_B_MAX ? 'B' : 'C');
-/** 把合法形状的 HH:MM:SS 换算成秒，只为判断「往回走了多少」。 */
-const secOf = (t) =>
-  Number(t.slice(0, 2)) * 3600 + Number(t.slice(3, 5)) * 60 + Number(t.slice(6, 8));
-// 日期标题：容忍行首空白（有人从别处复制会带前导空格）。
-const DATE_TITLE = /^\s*#\s+(\d{4}-\d{2}-\d{2})\s*$/;
-// 「看起来像条目但写法不对」：全角数字、全角句点、顿号、以及 `1.**`（缺空格）。
-// 这些形状 ENTRY 匹配不上，于是整条静默消失，一条 FAIL/WARN 都没有 ——
-// 必须单独捞出来，否则是最坏形态：以为记下了，索引里根本没有。
-const LOOSE_ENTRY = /^[０-９\d]+\s*[.．、]\s*\*\*/;
-// 代码围栏。围栏内的一切都是内容，不参与任何判定。
-const FENCE = /^\s*(?:```|~~~)/;
-// 正文段与子项的前缀。缩进宽度另校验。
-const BODY_PREFIX = /^( *)(正文：)(.*)$/;
-const ITEM_PREFIX = /^( *)- (.*)$/;
-
-// 空行只允许出现在这 5 个位置（前一个非空行 kind → 后一个非空行 kind）。
-// 每处恰好 1 个。多一个、错位置、连续两个、文件首尾 —— 全是 FAIL。
-const BLANK_OK = new Set(['date→entry', 'entry→body', 'body→item', 'body→entry', 'item→entry']);
+// 条目行 / 写入时刻 / 详略档位 / 日期标题 / 围栏 / 正文段与子项的前缀 ——
+// 这些词法定义全在 `log-parse.mjs`，本文件只 import，不再抄第二份。
+// 空行白名单同样在那里（BLANK_OK）。
 
 const errors = [];
 const warnings = [];
@@ -147,28 +124,9 @@ const kindCount = { date: 0, blank: 0, entry: 0, body: 0, item: 0, fence: 0, fen
 //   * 顶格的 `- xxx` 前面一条条目都没有 —— 不知道它属于谁。
 //   * 围栏内部的行 —— 那是代码内容，缩进是内容的一部分，动了就是改字。
 //   * 正文还写在标题行上、方括号字段不合法、第二个正文段…… 这些要改写文本。
-function lightKinds(arr) {
-  const kinds = new Array(arr.length).fill('unclassified');
-  let inF = false;
-  for (let i = 0; i < arr.length; i++) {
-    const line = arr[i];
-    if (FENCE.test(line)) {
-      kinds[i] = 'fence';
-      inF = !inF;
-      continue;
-    }
-    if (inF) {
-      kinds[i] = 'fenceInner';
-      continue;
-    }
-    if (line.length === 0) kinds[i] = 'blank';
-    else if (DATE_TITLE.test(line)) kinds[i] = 'date';
-    else if (ENTRY.test(line)) kinds[i] = 'entry';
-    else if (BODY_PREFIX.test(line)) kinds[i] = 'body';
-    else if (ITEM_PREFIX.test(line)) kinds[i] = 'item';
-  }
-  return kinds;
-}
+// 逐行分类（lightKinds）来自 `log-parse.mjs` —— 那份是纯词法，不看上下文。
+// 本文件下面那段「带校验的分类」才是这里的活：边分类边判缩进、边报错。
+// 两者对**合法行**判断一致（同一组正则），差异只在非法行的处置上。
 
 function repairLog(lines, tailIdx) {
   const done = [];

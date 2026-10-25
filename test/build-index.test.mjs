@@ -20,6 +20,15 @@ import { execFileSync } from 'node:child_process';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, '..', 'assets', 'build-index.mjs');
+// 生成器 import 了同目录的 log-parse.mjs，复制脚本必须两个一起复制 ——
+// 只复制 build-index.mjs 会 ERR_MODULE_NOT_FOUND。
+const PARSE_MODULE = join(HERE, '..', 'assets', 'log-parse.mjs');
+
+/** 把生成器（连同它依赖的 log-parse.mjs）放到指定目录。 */
+function copyScript(dir) {
+  copyFileSync(SCRIPT, join(dir, 'build-index.mjs'));
+  copyFileSync(PARSE_MODULE, join(dir, 'log-parse.mjs'));
+}
 
 const DAY = '2026-10-22';
 
@@ -33,7 +42,7 @@ function makeWs(files, opts = {}) {
     writeFileSync(join(logDir, name), content);
   }
   const scriptDir = opts.scriptInRoot ? root : logDir;
-  if (!opts.noScript) copyFileSync(SCRIPT, join(scriptDir, 'build-index.mjs'));
+  if (!opts.noScript) copyScript(scriptDir);
   return { root, logDir };
 }
 
@@ -640,7 +649,7 @@ test('脚本放在无关子目录会报错退出（无 日志\\ 子目录时）'
   writeFileSync(join(outer, '日志', `${DAY}.md`), one());
   const other = join(outer, '随便');
   mkdirSync(other, { recursive: true });
-  copyFileSync(SCRIPT, join(other, 'build-index.mjs'));
+  copyScript(other);
   let code = 0;
   let out = '';
   try {
@@ -659,7 +668,7 @@ test('同名目录不会喷栈，报「这是个目录」', () => {
   const ws = makeWs({});
   results.push(ws.root);
   mkdirSync(join(ws.logDir, `${DAY}.md`), { recursive: true });
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  copyScript(ws.logDir);
   const r = run(ws);
   assert.equal(r.code, 1);
   assert.match(r.out, /这是个目录，不是文件/);
@@ -671,7 +680,7 @@ test('同名目录不会喷栈，报「这是个目录」', () => {
 test('只有坏名文件时报「文件名不合规范」而非「找不到工作区」', () => {
   const ws = makeWs({ [`${DAY}-补充.md`]: one() });
   results.push(ws.root);
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  copyScript(ws.logDir);
   const r = run(ws);
   assert.match(r.out, /文件名不合规范/);
   assert.doesNotMatch(r.out, /找不到工作区/);
@@ -746,7 +755,7 @@ test('非 UTF-8 字节会 WARN', () => {
   const gbk = Buffer.from([0xb1, 0xea, 0xcc, 0xe2]);
   const tail = Buffer.from(`**\n\n   正文：正文。\n`, 'utf8');
   writeFileSync(join(ws.logDir, `${DAY}.md`), Buffer.concat([head, gbk, tail]));
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  copyScript(ws.logDir);
   const r = run(ws);
   assert.match(r.out, /疑似非 UTF-8/);
 });
@@ -758,7 +767,7 @@ test('\\r\\r\\n 被收敛成 CRLF', () => {
   results.push(ws.root);
   const body = `# ${DAY}\r\r\n\r\r\n1. [time=00:00:00][tier=A] **甲**\r\r\n\r\r\n   正文：正文。\r\r\n`;
   writeFileSync(join(ws.logDir, `${DAY}.md`), body);
-  copyFileSync(SCRIPT, join(ws.logDir, 'build-index.mjs'));
+  copyScript(ws.logDir);
   const r = run(ws);
   assert.equal(r.code, 0, r.out);
   const after = readFileSync(join(ws.logDir, `${DAY}.md`), 'utf8');
@@ -796,7 +805,7 @@ test('脚本放工作区根（B 情形）也能工作', () => {
   results.push(root);
   mkdirSync(join(root, '日志'), { recursive: true });
   writeFileSync(join(root, '日志', `${DAY}.md`), one());
-  copyFileSync(SCRIPT, join(root, 'build-index.mjs'));
+  copyScript(root);
   let code = 0;
   let out = '';
   try {

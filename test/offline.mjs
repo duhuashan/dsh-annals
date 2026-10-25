@@ -35,6 +35,7 @@ import {
   snapshotPathStamps,
   pathStampsChangedSince,
 } from '../lib/index.js';
+import { tokenize, buildIdf, search } from '../lib/query.js';
 
 // ---------------------------------------------------------------------------
 // 脚手架：临时工作区 + mock 服务
@@ -366,21 +367,29 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.equal(ctx.registered.sections[0].name, 'worklog');
   assert.match(ctx.registered.sections[0].text, /日志系统/);
 
-  assert.equal(ctx.registered.tools.length, 1);
-  const tool = ctx.registered.tools[0];
+  assert.equal(ctx.registered.tools.length, 2);
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
   assert.equal(tool.name, 'worklog_init');
   assert.equal(tool.parameters.type, 'object');
   assert.deepEqual(tool.parameters.required, ['enabled']);
   assert.equal(tool.output.schema.type, 'string');
   assert.equal(typeof tool.output.render, 'function');
   assert.deepEqual(tool.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
+
+  const q = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  assert.ok(q, '没有注册 worklog_query —— 检索入口是这一步的全部目的');
+  assert.equal(q.parameters.type, 'object');
+  assert.deepEqual(q.parameters.required, ['query']);
+  assert.equal(q.output.schema.type, 'string');
+  assert.equal(typeof q.output.render, 'function');
+  assert.deepEqual(q.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
 });
 
 test('apply 配置开关能关掉每一项', (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
-  apply(ctx, { skill: false, section: false, initTool: false, reminder: false });
+  apply(ctx, { skill: false, section: false, initTool: false, queryTool: false, reminder: false });
   assert.equal(ctx.registered.skills.length, 0);
   assert.equal(ctx.registered.sections.length, 0);
   assert.equal(ctx.registered.tools.length, 0);
@@ -894,8 +903,183 @@ test('worklog_init 没有 live agent 时报错', async (t) => {
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools[0];
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
   await assert.rejects(() => tool.execute({ enabled: true }, {}), /live agent/);
+});
+
+// ---------------------------------------------------------------------------
+// worklog_query：检索入口
+// ---------------------------------------------------------------------------
+
+/** 造一份最小日志目录，供检索用例共用。 */
+function makeLogDir(root, files) {
+  const dir = join(root, '日志');
+  mkdirSync(dir, { recursive: true });
+  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body, 'utf8');
+  return dir;
+}
+
+/** 一条合规条目。 */
+function logEntry(num, time, tier, title, body) {
+  return `${num}. [time=${time}][tier=${tier}] **${title}**\n\n   W 正文：${body}\n`;
+}
+
+test('worklog_query：命中标题并给锚点', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': [
+      '# 2026-10-20',
+      '',
+      logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '正文讲的是写入时刻怎么取。'),
+      '',
+      logEntry(2, '10:00:00', 'A', '日志看板交付', '四屏全部真机验收通过。'),
+      '',
+    ].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+
+  const out = await tool.execute({ query: '时间戳' }, { agent });
+  assert.match(out, /匹配「时间戳」/);
+  assert.match(out, /第 1 条/);
+  assert.match(out, /生成器加了时间戳字段/);
+  // 锚点必须能直接拿去 read —— 缺了它就还得自己找位置
+  assert.match(out, /日志\\2026-10-20\.md:\d+/);
+});
+
+test('worklog_query：查不到时明说查不到，不硬凑', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+
+  const out = await tool.execute({ query: '完全不存在的词xyz' }, { agent });
+  assert.match(out, /没有匹配/, `查不到时应当明说，实际：${out.slice(0, 200)}`);
+  // 零命中时不能只说「没有」，还得告诉模型下一步该干什么 ——
+  // 「搜不到」和「没做过」是两回事，不说清模型会当成「确实没做过」直接重新开始。
+  assert.match(out, /不代表从未做过/);
+});
+
+test('worklog_query：日志目录不存在时不抛异常', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+  const out = await tool.execute({ query: '随便什么' }, { agent });
+  assert.match(out, /还没有任何条目/);
+});
+
+test('worklog_query：空查询直接拒绝，不去扫盘', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+  assert.match(await tool.execute({ query: '   ' }, { agent }), /查询是空的/);
+});
+
+test('worklog_query：limit 被夹在 1..20', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const files = { '2026-10-20.md': ['# 2026-10-20', ''] };
+  for (let i = 1; i <= 30; i++) {
+    const mm = String(i).padStart(2, '0');
+    files['2026-10-20.md'].push(logEntry(i, `09:${mm}:00`, 'A', `第 ${i} 条讲同一件事`, '同一件事的正文。'), '');
+  }
+  makeLogDir(root, { '2026-10-20.md': files['2026-10-20.md'].join('\n') });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+
+  const out = await tool.execute({ query: '同一件事', limit: 999 }, { agent });
+  const shown = (out.match(/^- /gm) ?? []).length;
+  assert.ok(shown <= 20, `limit 上限是 20，实际显示 ${shown} 条`);
+});
+
+// ---------------------------------------------------------------------------
+// 检索质量：这几个是真机踩出来的回归
+// ---------------------------------------------------------------------------
+
+test('检索：全库没出现过的 bigram 不能撑大覆盖率分母', async () => {
+  // 真机 bug：搜「重启插件」返回 0 条，而日志里明明有 24 条标题含这些词。
+  // 根因是切词切出「重启插件」「启插」两个全库 0 命中的词，它们的 idf 被当成 1.0，
+  // 占了覆盖率分母的一半多，真实命中（重启 + 插件）的覆盖率被压到 0.19，
+  // 乘上 COVERAGE_FLOOR 之后全落到 ABS_FLOOR 以下 —— 整批被丢弃。
+  const entries = [
+    { date: '2026-10-24', file: 'x.md', line: 1, num: 1, title: '改插件源码必须重启 DSH 才生效',
+      body: ['正文'], items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10 },
+  ];
+  const tokens = tokenize('重启插件');
+  const idf = buildIdf(entries, tokens);
+  assert.equal(idf.get('重启插件'), 0, '全库 0 出现的词权重必须是 0，否则会撑大分母');
+  assert.equal(idf.get('启插'), 0, '同上');
+
+  const r = search(entries, '重启插件', 3);
+  assert.equal(r.hits.length, 1, `该命中却没命中 —— idf 分母又算错了`);
+});
+
+test('检索：常见词不该盖过稀有词', async () => {
+  // 「插件」在 99/187 条里都有，「tierOf」只在几条里出现。
+  // 搜「tierOf」时，只提到「插件」的条目不该排在有 tierOf 的前面。
+  const entries = [
+    { date: '2026-10-20', file: 'x.md', line: 1, num: 1, title: '插件加载流程梳理',
+      body: ['讲插件'], items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10 },
+    { date: '2026-10-21', file: 'x.md', line: 5, num: 2, title: 'tierOf 的边界改成 <=',
+      body: ['正文'], items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10 },
+  ];
+  const r = search(entries, 'tierOf', 3);
+  assert.equal(r.hits[0].num, 2, '稀有词命中应当排在前面');
+});
+
+test('检索：全库都没有的词返回 0 条，不硬凑', async () => {
+  // 「完全不存在的词xyz」会切出「存在」这个 bigram。它不该把无关条目捞上来。
+  // 注意 fixture 要够大：库里只有 1 条时 idf 恒等于 1，什么都测不出来。
+  const entries = [];
+  for (let i = 1; i <= 20; i++) {
+    entries.push({
+      date: '2026-10-20', file: 'x.md', line: i, num: i,
+      title: `第 ${i} 条`,
+      body: ['这条里都有「存在」二字，它太常见了'],
+      items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10,
+    });
+  }
+  const r = search(entries, '完全不存在的词xyz', 3);
+  assert.equal(r.hits.length, 0, '只靠一个通用 bigram 蹭上的命中应当被 ABS_FLOOR 挡掉');
+});
+
+test('worklog_query：每次调用都写一条埋点', async (t) => {  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+
+  await tool.execute({ query: '时间戳' }, { agent });
+  await tool.execute({ query: '看板' }, { agent });
+
+  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  assert.ok(existsSync(probe), '没有写埋点 —— 两周后就无从判断这扇门有没有人推');
+  const lines = readFileSync(probe, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.length, 2);
+  assert.equal(lines[0].tool, 'worklog_query');
+  assert.equal(lines[0].query, '时间戳');
+  assert.equal(typeof lines[0].at, 'string');
+  assert.equal(typeof lines[0].hits, 'number');
 });
 
 // ---------------------------------------------------------------------------
@@ -1041,8 +1225,131 @@ test('官方清单说改了、但没写日志 → 照样提醒', async (t) => {
   assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
 });
 
-test('官方清单里有今天的日志 → 不催写日志', async (t) => {
+// ---------------------------------------------------------------------------
+// 漏查探测：只记，不打扰
+// ---------------------------------------------------------------------------
+
+/** 造一个已启用日志系统的会话，供探测用例共用。 */
+async function probeSetup(t) {
   const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': [
+      '# 2026-10-20',
+      '',
+      logEntry(1, '09:00:00', 'A', '给 build-index 加了时间戳字段', '写入时刻怎么取。'),
+      '',
+    ].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const session = {
+    id: 'session-probe',
+    header: { origin: 'primary' },
+    snapshotEvents: () => [],
+  };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+  return { root, ctx, session, agent };
+}
+
+test('漏查探测：写了日志提过的文件但没查 → 记一条 probe-miss', async (t) => {
+  const { root, ctx, session, agent } = await probeSetup(t);
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 文件名撞上日志里提过的词（build-index）
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'build-index.mjs') }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  assert.ok(existsSync(probe), '该记漏查却没有埋点');
+  const rec = JSON.parse(readFileSync(probe, 'utf8').trim().split('\n')[0]);
+  assert.equal(rec.tool, 'probe-miss');
+  assert.match(rec.query, /build-index/);
+  assert.ok(rec.top, '应当带上最高分命中，否则两周后没法判断是不是真的重复');
+  assert.match(rec.top.title, /时间戳/);
+});
+
+test('漏查探测：这轮查过了就不再记', async (t) => {
+  const { root, ctx, session, agent } = await probeSetup(t);
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'worklog_query', arguments: JSON.stringify({ query: 'build-index' }) },
+  });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'build-index.mjs') }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
+  const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
+  assert.equal(misses.length, 0, '查过了就不该记成漏查');
+});
+
+test('漏查探测：日志里没提过这些词 → 不记（这是在做新东西）', async (t) => {
+  const { root, ctx, session, agent } = await probeSetup(t);
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'zebra-quux-7788.py') }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
+  const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
+  assert.equal(misses.length, 0);
+});
+
+test('漏查探测：不注入、不 steer、不改行为', async (t) => {
+  const { root, ctx, session, agent } = await probeSetup(t);
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'build-index.mjs') }) },
+  });
+  const before = agent.steers.length;
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  // 探测本身不能制造任何提醒 —— 只有「没写日志」那条会 steer。
+  // 这里写的是工作区里的文件、没写日志，所以应当只有 1 条（催写日志），不是 2 条。
+  assert.equal(agent.steers.length, before + 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+});
+
+test('漏查探测：probe=false 时完全不记', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '给 build-index 加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, { probe: false });
+  const session = { id: 'session-probe2', header: { origin: 'primary' }, snapshotEvents: () => [] };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'build-index.mjs') }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
+  assert.equal(lines.filter((l) => JSON.parse(l).tool === 'probe-miss').length, 0);
+});
+
+test('官方清单里有今天的日志 → 不催写日志', async (t) => {  const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root, {
     workspaceChanges: {
