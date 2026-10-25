@@ -25,6 +25,7 @@ import {
   indexLinks,
   matchesTarget,
   findInLinks,
+  inRange,
   resolveTarget,
   notFoundMessage,
   clipRaw,
@@ -237,6 +238,29 @@ test('extractFromLines：「第 N 条、第 M 条」顿号并列与多余空格�
   assert.deepEqual(links.map((l) => l.entry), [11, 13, 15]);
 });
 
+test('extractFromLines：范围写法「第 38–56 条」保留成一条带 entryRange 的引用，不展开', () => {
+  const lines = ['1. **标题**', '正文：细节指向 `日志\\2026-10-22.md` 第 38–56 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.equal(links.length, 1, '不能展开成 19 条 —— 那会让出链数虚高，渲染也没信息量');
+  assert.deepEqual(links[0].entryRange, [38, 56]);
+  assert.equal(links[0].entry, 38, 'entry 取区间起点，给下游当单值用');
+});
+
+test('extractFromLines：范围写法的破折号三种写法都认（– - ~）', () => {
+  for (const dash of ['–', '-', '~']) {
+    const lines = ['1. **标题**', `正文：见 \`日志\\2026-10-22.md\` 第 3${dash}7 条。`];
+    const links = extractFromLines(lines, 1);
+    assert.deepEqual(links[0].entryRange, [3, 7], `破折号 ${dash} 没认出来`);
+  }
+});
+
+test('extractFromLines：「第 3 条」不能被误认成范围', () => {
+  const lines = ['1. **标题**', '正文：见 `日志\\2026-10-22.md` 第 3 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.equal(links[0].entryRange, null);
+  assert.equal(links[0].entry, 3);
+});
+
 test('extractFromLines：斜杠并列（第 11/13 条）不猜 —— 猜错是假引用', () => {
   const lines = ['1. **标题**', '正文：`日志\\2026-10-19.md` 第 11/13 条。'];
   const links = extractFromLines(lines, 1);
@@ -380,6 +404,44 @@ test('findInLinks：条目级 —— 只算写了同一个条目号的引用', (
   } finally {
     ws.cleanup();
   }
+});
+
+test('findInLinks：范围引用能命中区间内的条目，且标记为「按范围」', () => {
+  const ws = makeWs({
+    '2026-10-23.md': logFile('2026-10-23', [
+      { num: 1, title: '甲', body: '细节指向 `日志\\2026-10-22.md` 第 38–56 条。' },
+      { num: 2, title: '乙', body: '精确点名 `日志\\2026-10-22.md` 第 60 条。' },
+    ]),
+    '2026-10-22.md': logFile('2026-10-22', [{ num: 45, title: '区间内' }, { num: 60, title: '区间外' }]),
+  });
+  try {
+    const idx = indexLinks(ws.logDir);
+    // 查第 45 条：它被「第 38–56 条」覆盖了，说「没人引用」是错的
+    const inRangeHits = findInLinks(idx.items, {
+      kind: 'log', logPath: '日志\\2026-10-22.md', entry: 45, label: '',
+    });
+    assert.equal(inRangeHits.length, 1);
+    assert.equal(inRangeHits[0].item.num, 1);
+    assert.deepEqual(inRangeHits[0].links[0].entryRange, [38, 56], '要能标出「是按范围引的」');
+
+    // 查第 60 条：不在区间内，只有精确点名那处算
+    const outsideHits = findInLinks(idx.items, {
+      kind: 'log', logPath: '日志\\2026-10-22.md', entry: 60, label: '',
+    });
+    assert.equal(outsideHits.length, 1);
+    assert.equal(outsideHits[0].item.num, 2);
+  } finally {
+    ws.cleanup();
+  }
+});
+
+test('inRange：容得下写反的区间（56–38 也当 38–56 用）', () => {
+  assert.equal(inRange(45, [38, 56]), true);
+  assert.equal(inRange(45, [56, 38]), true, '写反多半是笔误，按区间理解比什么都不命中更有用');
+  assert.equal(inRange(37, [38, 56]), false);
+  assert.equal(inRange(57, [38, 56]), false);
+  assert.equal(inRange(38, [38, 56]), true, '端点算在区间内');
+  assert.equal(inRange(56, [38, 56]), true);
 });
 
 test('findInLinks：查不到时返回空数组', () => {
@@ -545,6 +607,43 @@ test('renderOut：没有斜杠写法时不该出现那条提示', () => {
   assert.doesNotMatch(renderOut(item), /并列写法/);
 });
 
+test('renderOut：范围引用显示成「第 38–56 条」，不是「未指定条目」', () => {
+  const item = {
+    date: '2026-10-22',
+    num: 57,
+    title: '标题',
+    file: '2026-10-22.md',
+    links: [
+      { path: '日志\\2026-10-22.md', logPath: '日志\\2026-10-22.md', entry: 38, entryRange: [38, 56], line: 0, atLine: 654, raw: '细节指向 `日志\\2026-10-22.md` 第 38–56 条' },
+    ],
+  };
+  const text = renderOut(item);
+  assert.match(text, /日志·第 38–56 条/);
+  assert.doesNotMatch(text, /未指定条目/, '范围是条目级的，不能降格成文件级');
+});
+
+test('renderIn：按范围命中的那处要注明「按范围引用」，不能装成精确点名', () => {
+  const hits = [
+    {
+      item: { date: '2026-10-22', num: 57, title: '标题', file: '2026-10-22.md', line: 645 },
+      links: [{ raw: '见 `日志\\2026-10-22.md` 第 38–56 条', entryRange: [38, 56] }],
+    },
+  ];
+  const text = renderIn(hits, { label: '日志\\2026-10-22.md 第 45 条' }, { items: 10, fileCount: 3 });
+  assert.match(text, /按范围引用：第 38–56 条/);
+});
+
+test('renderIn：精确点名的那处不加「按范围」前缀', () => {
+  const hits = [
+    {
+      item: { date: '2026-10-22', num: 5, title: '标题', file: '2026-10-22.md', line: 10 },
+      links: [{ raw: '见 `日志\\2026-10-22.md` 第 45 条', entryRange: null }],
+    },
+  ];
+  const text = renderIn(hits, { label: '日志\\2026-10-22.md 第 45 条' }, { items: 10, fileCount: 3 });
+  assert.doesNotMatch(text, /按范围引用/);
+});
+
 test('renderIn：命中时日期倒序、给锚点与原文、末尾带检索范围', () => {
   const hits = [
     { item: { date: '2026-10-21', num: 1, title: '早', file: '2026-10-21.md', line: 3 }, links: [{ raw: 'x' }] },
@@ -577,6 +676,18 @@ test('tallyBareLogRefs：只统计指向日志的引用，分得出没写条目�
     { links: [{ logPath: '日志\\c.md', entry: 0 }] },
   ];
   assert.deepEqual(tallyBareLogRefs(items), { total: 3, bare: 2 });
+});
+
+test('tallyBareLogRefs：范围引用是条目级的，不算「只写了文件名」', () => {
+  const items = [
+    {
+      links: [
+        { logPath: '日志\\a.md', entry: 38, entryRange: [38, 56] },
+        { logPath: '日志\\b.md', entry: 0, entryRange: null },
+      ],
+    },
+  ];
+  assert.deepEqual(tallyBareLogRefs(items), { total: 2, bare: 1 });
 });
 
 // ---------------------------------------------------------------------------
