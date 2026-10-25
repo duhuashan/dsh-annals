@@ -91,6 +91,24 @@ const ENTRY = /^(\d+)\.\s+(?:\[[a-z][a-z0-9-]*=[^\]]*\]\s*)*\*\*(.+?)\*\*\s*$/;
 // 也不要吞进一个半懂的值。日期不进字段（文件名已经给了，写两处就是两个真源）。
 const TIME_FIELD = /\[time=([^\]]*)\]/;
 const TIME_SHAPE = /^(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+// 详略档位：2026-10-25 起必填，紧跟 [time=] 之后。只认大写 A / B / C ——
+// 索引里显示的就是 [A]，两处大小写不一致会让人以为索引错了。
+// 它记的是**动笔前的声明**（这条我打算写多细），不是写完量出来的标签；
+// 但声明必须与实测一致（见 TIER_A_MAX / TIER_B_MAX），否则档位就成了
+// 「想写多长写多长」的橡皮图章。
+const TIER_FIELD = /\[tier=([^\]]*)\]/;
+const TIER_SHAPE = /^[ABC]$/;
+// 三档详略的字数边界。技能正文 §2.3 写的是同一组数字 —— 改一处必须改两处，
+// 没有第二份定义（这里算，正文只是照抄给模型看）。
+// 两个都是**上限**，比较符都用 `<=`：原来写成 A_MAX 600 / C_MIN 1501，一个配 `<=`
+// 一个配 `<`，读的人得在脑子里换算一次才敢确认边界到底落在 1500 还是 1501。
+//
+// 口径（2026-10-25 起）：只算**正文段行 + 子项行 + 围栏内行**，不算编号、方括号字段、
+// 标题、条目内空行。原来按整条算，于是「加了 [time=] 那 17 个字符」本身就能把条目
+// 推过 600 —— 实测 3 条因此跨档。骨架不该参与「这条写了多少东西」的度量。
+const TIER_A_MAX = 600;
+const TIER_B_MAX = 1500;
+const tierOf = (chars) => (chars <= TIER_A_MAX ? 'A' : chars <= TIER_B_MAX ? 'B' : 'C');
 /** 把合法形状的 HH:MM:SS 换算成秒，只为判断「往回走了多少」。 */
 const secOf = (t) =>
   Number(t.slice(0, 2)) * 3600 + Number(t.slice(3, 5)) * 60 + Number(t.slice(6, 8));
@@ -528,6 +546,20 @@ for (const file of files) {
         }
         prevTime = time;
       }
+      // 详略档位：必填、只认大写 A/B/C。这一层只管「有没有、长得对不对」，
+      // 「声明和实测对不对得上」要等 chars 算出来（见下面一致性校验那一段）——
+      // 分开报是因为改法不同：形状错是改字母，声明错是删字或换档。
+      const tr = TIER_FIELD.exec(hit[0]);
+      const tier = tr ? tr[1] : '';
+      if (!tr) {
+        errors.push(
+          `${file}:${i + 1} 第 ${num} 条缺详略档位（条目行要带 \`[tier=A]\`／\`[tier=B]\`／\`[tier=C]\`，紧跟 \`[time=]\` 之后，如 \`1. [time=09:05:00][tier=B] **标题**\`）`,
+        );
+      } else if (!TIER_SHAPE.test(tier)) {
+        errors.push(
+          `${file}:${i + 1} 第 ${num} 条的详略档位「${tier}」不合法（只认大写 \`A\` / \`B\` / \`C\` 三个字母）`,
+        );
+      }
       // 标题只有空白：`(.+?)` 允许纯空格，`trim()` 之后就成空串，索引里会多出一条
       // 「- 10-22   · 日志\2026-10-22.md:3」—— 一条没有标题的条目。
       // 真空 `****` 反而进不来（被 `\s*$` 挡下、落到「条目未加粗」那条），所以只查这一种。
@@ -558,7 +590,7 @@ for (const file of files) {
       }
       lastNum = Math.max(lastNum, num);
       lastEntryLine = i;
-      entries.push({ date: dateFromName, file, line: i + 1, num, title, time });
+      entries.push({ date: dateFromName, file, line: i + 1, num, title, time, tier });
       continue;
     }
 
@@ -725,9 +757,38 @@ for (const file of files) {
     if (bodyFound === -1) {
       errors.push(`${file}:${e.line} 第 ${e.num} 条「${e.title}」没有正文段（条目行下面要缩进写一行 \`正文：…\`）`);
     }
-    // 每条的字数（整条口径：编号 + 标题 + 正文 + 子项，含条目内部的空行，不含条目之间的空行）。
-    // 这里只**统计并报告**，不判定 —— 见下面 TIER_* 处的说明。
-    e.chars = lines2.slice(from, to).join('\n').replace(/(\r?\n)+$/, '').length;
+    // 每条的字数（口径见 TIER_A_MAX 处：只算正文段 + 子项 + 围栏内行，
+    // 不算编号、方括号字段、标题、条目内空行 —— 骨架不该参与度量）。
+    let n = 0;
+    for (let j = from; j < to; j++) {
+      const k = kinds[j];
+      if (k === 'body' || k === 'item' || k === 'fence' || k === 'fenceInner') n += lines2[j].length + 1;
+    }
+    if (n > 0) n -= 1; // 最后一行没有行尾换行
+    e.chars = n;
+
+    // ---- 档位声明 vs 实测 ----
+    // 档位是动笔前的声明（这条打算写多细），但声明必须与实测对得上，否则它就
+    // 只是橡皮图章 —— 写多长都行，反正档位可以事后随手填。所以这里 FAIL。
+    // 三条文案分开写，因为改法不同：声明低了是删字或升档，声明高了只是降档。
+    if (e.tier && TIER_SHAPE.test(e.tier)) {
+      const actual = tierOf(e.chars);
+      if (actual !== e.tier) {
+        if (e.tier === 'A') {
+          errors.push(
+            `${file}:${e.line} 第 ${e.num} 条声明 \`[tier=A]\`，实测 ${e.chars} 字符（正文与子项），已超 A 档上限 ${TIER_A_MAX}。删到 ${TIER_A_MAX} 以内，或把 \`[tier=A]\` 改成 \`[tier=B]\`（升档要理由，写进正文）`,
+          );
+        } else if (e.tier === 'B') {
+          errors.push(
+            `${file}:${e.line} 第 ${e.num} 条声明 \`[tier=B]\`，实测 ${e.chars} 字符（正文与子项），${e.chars <= TIER_A_MAX ? `没到 B 档下限（A 档上限 ${TIER_A_MAX}），应改 \`[tier=A]\`` : `已超 B 档上限 ${TIER_B_MAX}，应改 \`[tier=C]\``}（降档不用理由）`,
+          );
+        } else {
+          errors.push(
+            `${file}:${e.line} 第 ${e.num} 条声明 \`[tier=C]\`，实测 ${e.chars} 字符（正文与子项），没到 C 档下限（B 档上限 ${TIER_B_MAX}），应改 \`[tier=B]\`（降档不用理由）`,
+          );
+        }
+      }
+    }
   }
 
   // ---- 空行位置校验（只允许那 5 个位置，每处恰好 1 个）----
@@ -803,21 +864,16 @@ for (const file of files) {
   }
 }
 
-// 三档详略的字数边界。技能正文 §2.3 写的是同一组数字 —— 改一处必须改两处，
-// 没有第二份定义（这里算，正文只是照抄给模型看）。
-const TIER_A_MAX = 600;
-const TIER_C_MIN = 1501;
-const tierOf = (chars) => (chars <= TIER_A_MAX ? 'A' : chars < TIER_C_MIN ? 'B' : 'C');
-
-// 只统计、不判定。2026-10-22 曾取消过一条 20,000 字符的长度 WARN，理由是
-// 「长度不是质量的判据，且历史文件一旦超线就永久报警、修不掉，只会训练出对
-// WARN 的麻木」。那个理由现在仍然成立：全库 58 条 C 档里真正写明「细节在哪份
-// 文档」的只有 2 条，一旦改成检查就是 56 条永远修不掉的报警，而日志又不许
-// 回头改。所以这里输出的是**分布**，让人看见偏移，而不是**报警**，逼人删字。
+// 档位分布按**声明**统计（声明与实测不一致的已在上面的循环里 FAIL，所以两者恒等）。
+// 只统计、不判定：2026-10-22 曾取消过一条 20,000 字符的长度 WARN，理由是
+// 「历史文件一旦超线就永久报警、修不掉，只会训练出对 WARN 的麻木」。那条理由
+// 对**事后测量**仍然成立 —— 所以这里输出的还是分布，不是报警。
+// 区别在于：档位现在是**动笔前声明、写完校验**，超了可修（删字，或显式改字段升档），
+// 不存在「历史永远报警、修不掉」的困境。
 const tierCount = { A: 0, B: 0, C: 0 };
 const tierChars = { A: 0, B: 0, C: 0 };
 for (const e of entries) {
-  const t = tierOf(e.chars);
+  const t = TIER_SHAPE.test(e.tier) ? e.tier : tierOf(e.chars);
   tierCount[t]++;
   tierChars[t] += e.chars;
 }
@@ -825,7 +881,7 @@ for (const e of entries) {
 const latestDate = [...new Set(entries.map((e) => e.date))].sort().pop();
 const latest = entries.filter((e) => e.date === latestDate);
 const latestTier = { A: 0, B: 0, C: 0 };
-for (const e of latest) latestTier[tierOf(e.chars)]++;
+for (const e of latest) latestTier[TIER_SHAPE.test(e.tier) ? e.tier : tierOf(e.chars)]++;
 const median = (arr) => {
   if (!arr.length) return 0;
   const s = [...arr].sort((a, b) => a - b);
@@ -885,7 +941,11 @@ for (const month of months) {
       // 条目编号只在「拆条/合并」时才会漂，那是内容变化，本来就该被看见。
       // 时刻照抄字段、不截到分：两处精度不同的话，索引和文件对不上时没人知道信哪份。
       // 缺时刻的条目照样进索引（FAIL 已经报了），用 `--:--:--` 留个显眼的空位。
-      out.push(`- ${date.slice(5)} ${e.time || '--:--:--'}  ${e.title} · 日志\\${e.file} 第 ${e.num} 条`);
+      // 日期、时刻、档位各自加方括号：三列都是定宽骨架，括起来才一眼分得清哪段是什么，
+      // 也不会跟标题里的字黏在一起。日期不带年份 —— 上面已经有 `## 2026-10` 分组头了。
+      out.push(
+        `- [${date.slice(5)}] [${e.time || '--:--:--'}] [${e.tier || '?'}]  ${e.title} · 日志\\${e.file} 第 ${e.num} 条`,
+      );
     }
   }
   out.push('');
