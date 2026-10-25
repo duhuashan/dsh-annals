@@ -34,6 +34,7 @@ import {
   collectShellPaths,
   snapshotPathStamps,
   pathStampsChangedSince,
+  recordProbe,
 } from '../lib/index.js';
 import { tokenize, buildIdf, search } from '../lib/query.js';
 
@@ -1329,6 +1330,10 @@ test('漏查探测：日志里没提过这些词 → 不记（这是在做新东
 test('漏查探测：不注入、不 steer、不改行为', async (t) => {
   const { root, ctx, session, agent } = await probeSetup(t);
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 真的落盘：轮尾以工作区快照为准，只发 tool/call 不写文件会被正确判成「没改」。
+  // （这条曾经不落盘也能过 —— 因为埋点文件当时被算进工作区快照，
+  //  写一行埋点就够触发「改过文件」。那个 bug 修掉后这里必须真写。）
+  writeFileSync(join(root, 'build-index.mjs'), 'x\n', 'utf8');
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: { name: 'write', arguments: JSON.stringify({ file_path: join(root, 'build-index.mjs') }) },
@@ -1365,6 +1370,62 @@ test('漏查探测：probe=false 时完全不记', async (t) => {
   const probe = join(root, '.dsh', 'worklog-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   assert.equal(lines.filter((l) => JSON.parse(l).tool === 'probe-miss').length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 自指误报：插件自己写的状态文件不能算「工作区改过」
+// ---------------------------------------------------------------------------
+
+test('自指误报：只调 worklog_query、什么都没改 → 不催写日志', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '给 build-index 加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const session = { id: 'session-selfref', header: { origin: 'primary' }, snapshotEvents: () => [] };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  // 一轮里唯一发生的事：调了一次检索工具。它会往 .dsh\worklog-probe.jsonl 追加一行。
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'worklog_query', arguments: JSON.stringify({ query: 'build-index' }) },
+  });
+  recordProbe(ctx, root, { tool: 'worklog_query', query: 'build-index', hits: 3 });
+  const before = agent.steers.length;
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  // 只读查询不是「改了工作区」—— 不该有任何提醒。
+  // 曾经这里会误报：埋点文件在整区快照里，写它等于改工作区，
+  // 于是「查得越多，被催得越勤」，正好打在本工具要治的病上。
+  assert.equal(agent.steers.length, before, '只调了一次只读检索，不该被催写日志');
+});
+
+test('自指误报：状态文件被排除，但 .dsh\\skills 下的改动照常算数', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const before = snapshotWorkspaceStamp(root);
+  assert.ok(before instanceof Map);
+
+  // 插件自己写状态文件：不该被看见。
+  mkdirSync(join(root, '.dsh'), { recursive: true });
+  writeFileSync(join(root, '.dsh', 'log-system.json'), '{"enabled":true}\n', 'utf8');
+  recordProbe(ctx, root, { tool: 'worklog_query', query: 'x', hits: 1 });
+  assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), false, '插件自己的状态文件不该算工作区改动');
+
+  // 用户/模型在 .dsh\skills 里干正事：必须照常算数 —— 不能因为排除就整个跳过 .dsh\。
+  mkdirSync(join(root, '.dsh', 'skills'), { recursive: true });
+  writeFileSync(join(root, '.dsh', 'skills', 'x.md'), 'x\n', 'utf8');
+  assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), true, '.dsh\\skills 下的改动必须照常算数');
 });
 
 test('官方清单里有今天的日志 → 不催写日志', async (t) => {  const root = makeRoot();
