@@ -15,9 +15,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 
 import {
+  indexWorkspaceFiles,
+  resolveBareName,
   normalizePath,
   asLogPath,
   parseTicked,
@@ -25,6 +27,7 @@ import {
   indexLinks,
   matchesTarget,
   findInLinks,
+  findBareSuspects,
   inRange,
   resolveTarget,
   notFoundMessage,
@@ -352,12 +355,21 @@ test('matchesTarget：日志按 logPath 严格相等', () => {
   assert.equal(matchesTarget(link, { kind: 'log', logPath: '日志\\2026-10-23.md' }), false);
 });
 
-test('matchesTarget：普通文件认「全路径」与「裸名」两种写法', () => {
+test('matchesTarget：普通文件认全路径，也认「引用里写了更长路径」', () => {
   const full = { path: 'tools\\check-refs.mjs', logPath: null, entry: 0 };
-  const bare = { path: 'check-refs.mjs', logPath: null, entry: 0 };
+  const longer = { path: 'D:\\AI\\deepseek2\\tools\\check-refs.mjs', logPath: null, entry: 0 };
   const target = { kind: 'file', path: 'tools\\check-refs.mjs' };
   assert.equal(matchesTarget(full, target), true);
-  assert.equal(matchesTarget(bare, target), true, '裸名引用也该命中');
+  assert.equal(matchesTarget(longer, target), true);
+});
+
+test('matchesTarget：裸名不再按文件名放宽 —— `说明.md` 不能算进 `tools\\说明.md`', () => {
+  // 这条曾经是放宽的，实测后果是查 `tools\说明.md` 把全库四个 说明.md 的引用全算进来，
+  // 数量从 20 条悄悄变成 33 条且不报错。裸名的归一改在 extractFromLines 里做：
+  // 全库唯一时才补全路径（于是走全路径匹配），有同名时保留裸名（于是不命中）。
+  const bare = { path: '说明.md', logPath: null, entry: 0 };
+  assert.equal(matchesTarget(bare, { kind: 'file', path: 'tools\\说明.md' }), false);
+  assert.equal(matchesTarget(bare, { kind: 'file', path: '日志看板\\说明.md' }), false);
 });
 
 test('matchesTarget：裸名匹配不能跨目录误伤 —— `b\\check-refs.mjs` 不该命中 `a\\check-refs.mjs`', () => {
@@ -712,4 +724,132 @@ test('renderOutFile：只给路径清单，不贴原文', () => {
 test('renderOutFile：全都没出链时明确说「没有」', () => {
   const text = renderOutFile([{ date: '2026-10-24', num: 1, title: '甲', links: [] }]);
   assert.match(text, /没有任何条目引用文件/);
+});
+
+// ---------------------------------------------------------------------------
+// 裸名归一 + 日志置顶（用户 m02203 的三项要求）
+// ---------------------------------------------------------------------------
+
+// 临时工作区里再放几个真文件，好让 indexWorkspaceFiles 有东西可查。
+// 特意造两个同名 `说明.md` —— 这正是「不能猜」的场景。
+function makeWsWithFiles(files, extra) {
+  const ws = makeWs(files);
+  for (const [rel, content] of Object.entries(extra)) {
+    const abs = join(ws.root, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, content, 'utf8');
+  }
+  return ws;
+}
+
+test('indexWorkspaceFiles：同名文件聚在一张表里，跳 .git', () => {
+  const ws = makeWsWithFiles(
+    { '2026-10-23.md': logFile('2026-10-23', [{ num: 1, title: '甲' }]) },
+    { 'tools\\说明.md': 'a', '日志看板\\说明.md': 'b', 'tools\\check-refs.mjs': 'c', '.git\\config': 'd' },
+  );
+  try {
+    const idx = indexWorkspaceFiles(ws.root);
+    assert.deepEqual(idx.get('说明.md').sort(), ['tools\\说明.md', '日志看板\\说明.md'].sort());
+    assert.deepEqual(idx.get('check-refs.mjs'), ['tools\\check-refs.mjs']);
+    assert.equal(idx.has('config'), false, '.git 里的文件不该进表');
+  } finally {
+    ws.cleanup();
+  }
+});
+
+test('resolveBareName：唯一才补全，同名一律不猜', () => {
+  const idx = new Map([
+    ['check-refs.mjs', ['tools\\check-refs.mjs']],
+    ['说明.md', ['tools\\说明.md', '日志看板\\说明.md']],
+  ]);
+  assert.equal(resolveBareName('check-refs.mjs', idx), 'tools\\check-refs.mjs');
+  assert.equal(resolveBareName('说明.md', idx), null);
+  assert.equal(resolveBareName('不存在.mjs', idx), null);
+});
+
+test('extractFromLines：裸名唯一时归一成全路径，于是出链不会把同一个文件算两处', () => {
+  const fileIndex = new Map([['check-refs.mjs', ['tools\\check-refs.mjs']]]);
+  const lines = [
+    '1. **改 `tools\\check-refs.mjs`**',
+    '',
+    '正文：`check-refs.mjs` 里加了检查。',
+  ];
+  const links = extractFromLines(lines, 1, fileIndex);
+  // 两条都指向同一个文件、同一个条目号 → 归一后去重成 1 条。
+  assert.equal(links.length, 1);
+  assert.equal(links[0].path, 'tools\\check-refs.mjs');
+});
+
+test('extractFromLines：裸名有同名时保留原样并标 ambiguous，不做猜测', () => {
+  const fileIndex = new Map([['说明.md', ['tools\\说明.md', '日志看板\\说明.md']]]);
+  const links = extractFromLines(['1. **补 `说明.md`**'], 1, fileIndex);
+  assert.equal(links[0].path, '说明.md', '不能猜成任何一个');
+  assert.deepEqual(links[0].ambiguous, ['tools\\说明.md', '日志看板\\说明.md']);
+});
+
+test('findInLinks + findBareSuspects：查 tools\\说明.md 时不把同名的裸名引用算成它的', () => {
+  const ws = makeWsWithFiles(
+    {
+      '2026-10-23.md': logFile('2026-10-23', [
+        { num: 1, title: '甲', body: '改了 `tools\\说明.md`。' },
+        { num: 2, title: '乙', body: '也动了 `说明.md`。' },
+      ]),
+    },
+    { 'tools\\说明.md': 'a', '日志看板\\说明.md': 'b' },
+  );
+  try {
+    const fileIndex = indexWorkspaceFiles(ws.root);
+    const idx = indexLinks(ws.logDir, fileIndex);
+    const target = { kind: 'file', path: 'tools\\说明.md', label: '' };
+    const hits = findInLinks(idx.items, target);
+    assert.equal(hits.length, 1, '只算真的写了 tools\\ 的那条');
+    assert.equal(hits[0].item.num, 1);
+    const suspects = findBareSuspects(idx.items, target);
+    assert.equal(suspects.length, 1, '裸名那条进「指向不明」，不进正式入链');
+    assert.equal(suspects[0].item.num, 2);
+  } finally {
+    ws.cleanup();
+  }
+});
+
+test('renderOut：日志引用排在普通文件前面，并给出分组计数', () => {
+  const item = {
+    date: '2026-10-24',
+    num: 1,
+    file: '2026-10-24.md',
+    title: '甲',
+    links: [
+      { path: 'tools\\a.mjs', logPath: null, entry: 0, entryRange: null, line: 0, atLine: 5, raw: '见 tools\\a.mjs' },
+      { path: '日志\\2026-10-23.md', logPath: '日志\\2026-10-23.md', entry: 3, entryRange: null, line: 0, atLine: 7, raw: '见 日志\\2026-10-23.md 第 3 条' },
+    ],
+  };
+  const text = renderOut(item);
+  assert.match(text, /引用了 2 处（日志 1 · 文件 1）/);
+  assert.ok(text.indexOf('日志\\2026-10-23.md') < text.indexOf('tools\\a.mjs'), '日志那行必须在前');
+});
+
+test('renderIn：精确写了条目号的排前面，范围引用与文件级在后', () => {
+  const mk = (num, links) => ({
+    item: { date: '2026-10-24', num, file: '2026-10-24.md', title: `第${num}条`, line: num },
+    links,
+  });
+  const hits = [
+    mk(1, [{ raw: '只说文件', entry: 0, entryRange: null }]),
+    mk(2, [{ raw: '按范围', entry: 38, entryRange: [38, 56] }]),
+    mk(3, [{ raw: '精确点名', entry: 45, entryRange: null }]),
+  ];
+  const text = renderIn(hits, { label: '日志\\x.md 第 45 条' }, { items: 3, fileCount: 1 });
+  assert.ok(text.indexOf('第3条') < text.indexOf('第2条'), '精确 > 范围');
+  assert.ok(text.indexOf('第2条') < text.indexOf('第1条'), '范围 > 文件级');
+  assert.match(text, /其中 1 条精确写了条目号/);
+});
+
+test('renderIn：有空结果时把「指向不明」的疑似条目说出来，而不是装作查不到', () => {
+  const suspects = [
+    { item: { date: '2026-10-24', num: 2, file: '2026-10-24.md', title: '乙', line: 9 }, links: [{ raw: '动了 说明.md' }] },
+  ];
+  const text = renderIn([], { label: 'tools\\说明.md' }, { items: 10, fileCount: 3 }, suspects);
+  assert.match(text, /没有日志条目引用它/);
+  assert.match(text, /但有 1 处只写了文件名/);
+  assert.match(text, /第 2 条「乙」/);
 });
