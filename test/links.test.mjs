@@ -214,6 +214,42 @@ test('extractFromLines：闭引号后面的「第 N 条」被收下（工作区�
   assert.equal(links[0].entry, 33);
 });
 
+test('extractFromLines：同一文件不同条目号是两条出链，不能被路径去重吞掉', () => {
+  const lines = [
+    '1. **标题**',
+    '正文：见 `日志\\2026-10-22.md` 第 11 条。',
+    '   - 另见 `日志\\2026-10-22.md` 第 13 条。',
+  ];
+  const links = extractFromLines(lines, 1);
+  assert.deepEqual(links.map((l) => l.entry), [11, 13], '第 11 条与第 13 条都要留下');
+});
+
+test('extractFromLines：「第 N 条与第 M 条」并列写法展开成两条', () => {
+  const lines = ['1. **标题**', '正文：`日志\\2026-10-19.md` 第 11 条与第 13 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.deepEqual(links.map((l) => l.entry), [11, 13]);
+  assert.ok(links.every((l) => l.path === '日志\\2026-10-19.md'));
+});
+
+test('extractFromLines：「第 N 条、第 M 条」顿号并列与多余空格都认', () => {
+  const lines = ['1. **标题**', '正文：`日志\\2026-10-19.md` 第 11 条、 第 13 条 、第 15 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.deepEqual(links.map((l) => l.entry), [11, 13, 15]);
+});
+
+test('extractFromLines：斜杠并列（第 11/13 条）不猜 —— 猜错是假引用', () => {
+  const lines = ['1. **标题**', '正文：`日志\\2026-10-19.md` 第 11/13 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.equal(links.length, 1);
+  assert.equal(links[0].entry, 0, '认不出就退化成文件级引用（entry 用 0 表示没条目号）');
+});
+
+test('extractFromLines：并列的条目号只对紧挨着的那一对反引号生效', () => {
+  const lines = ['1. **标题**', '正文：`a.md` 第 2 条与 `b.md` 第 3 条。'];
+  const links = extractFromLines(lines, 1);
+  assert.deepEqual(links.map((l) => [l.path, l.entry]), [['a.md', 2], ['b.md', 3]]);
+});
+
 // ---------------------------------------------------------------------------
 // indexLinks —— 端到端，真实磁盘
 // ---------------------------------------------------------------------------
@@ -479,6 +515,34 @@ test('renderOut：没有出链时明确说「没有」，不返回空串', () =>
     links: [],
   });
   assert.match(text, /没有引用任何文件/);
+});
+
+test('renderOut：斜杠并列写法要在输出里说明「工具不认」，不能装作没写条目号', () => {
+  const item = {
+    date: '2026-10-23',
+    num: 5,
+    title: '标题',
+    file: '2026-10-23.md',
+    links: [
+      { path: '日志\\2026-10-20.md', logPath: '日志\\2026-10-20.md', entry: 0, line: 0, atLine: 8, raw: '改过 `日志\\2026-10-20.md` 第 11/13 条' },
+    ],
+  };
+  const text = renderOut(item);
+  assert.match(text, /日志·未指定条目/, '解析上退化成文件级');
+  assert.match(text, /并列写法，工具不认/, '但要明说原因，否则读起来像「这里本来就没写条目号」');
+});
+
+test('renderOut：没有斜杠写法时不该出现那条提示', () => {
+  const item = {
+    date: '2026-10-23',
+    num: 5,
+    title: '标题',
+    file: '2026-10-23.md',
+    links: [
+      { path: '日志\\2026-10-20.md', logPath: '日志\\2026-10-20.md', entry: 11, line: 0, atLine: 8, raw: '见 `日志\\2026-10-20.md` 第 11 条' },
+    ],
+  };
+  assert.doesNotMatch(renderOut(item), /并列写法/);
 });
 
 test('renderIn：命中时日期倒序、给锚点与原文、末尾带检索范围', () => {
