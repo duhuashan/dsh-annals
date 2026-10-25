@@ -367,6 +367,10 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.equal(ctx.registered.sections.length, 1);
   assert.equal(ctx.registered.sections[0].name, 'worklog');
   assert.match(ctx.registered.sections[0].text, /日志系统/);
+  // 档位指令必须两半都在：只写「没说就是 B」会让 AI 把用户的「简单记」当空气
+  // （2026-10-26 第 20 条就是踩这个坑记成了 B 档，用户当场指出）
+  assert.match(ctx.registered.sections[0].text, /简单记/, '注入段缺「用户说简单记→A」这半句');
+  assert.match(ctx.registered.sections[0].text, /详细记/, '注入段缺「用户说详细记→C」这半句');
 
   assert.equal(ctx.registered.tools.length, 3);
   const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
