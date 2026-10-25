@@ -368,7 +368,7 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.equal(ctx.registered.sections[0].name, 'worklog');
   assert.match(ctx.registered.sections[0].text, /日志系统/);
 
-  assert.equal(ctx.registered.tools.length, 2);
+  assert.equal(ctx.registered.tools.length, 3);
   const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
   assert.equal(tool.name, 'worklog_init');
   assert.equal(tool.parameters.type, 'object');
@@ -384,13 +384,22 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.equal(q.output.schema.type, 'string');
   assert.equal(typeof q.output.render, 'function');
   assert.deepEqual(q.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
+
+  const links = ctx.registered.tools.find((x) => x.name === 'worklog_links');
+  assert.ok(links, '没有注册 worklog_links —— 双向链接是这一步的全部目的');
+  assert.equal(links.parameters.type, 'object');
+  assert.deepEqual(links.parameters.required, ['target']);
+  assert.deepEqual(links.parameters.properties.direction.enum, ['both', 'in', 'out']);
+  assert.equal(links.output.schema.type, 'string');
+  assert.equal(typeof links.output.render, 'function');
+  assert.deepEqual(links.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
 });
 
 test('apply 配置开关能关掉每一项', (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
-  apply(ctx, { skill: false, section: false, initTool: false, queryTool: false, reminder: false });
+  apply(ctx, { skill: false, section: false, initTool: false, queryTool: false, linksTool: false, reminder: false });
   assert.equal(ctx.registered.skills.length, 0);
   assert.equal(ctx.registered.sections.length, 0);
   assert.equal(ctx.registered.tools.length, 0);
