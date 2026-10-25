@@ -1012,22 +1012,40 @@ test('worklog_query：limit 被夹在 1..20', async (t) => {
 // 检索质量：这几个是真机踩出来的回归
 // ---------------------------------------------------------------------------
 
-test('检索：全库没出现过的 bigram 不能撑大覆盖率分母', async () => {
+test('检索：无意义的 bigram 不该把整批命中拖到看不见', async () => {
   // 真机 bug：搜「重启插件」返回 0 条，而日志里明明有 24 条标题含这些词。
-  // 根因是切词切出「重启插件」「启插」两个全库 0 命中的词，它们的 idf 被当成 1.0，
-  // 占了覆盖率分母的一半多，真实命中（重启 + 插件）的覆盖率被压到 0.19，
-  // 乘上 COVERAGE_FLOOR 之后全落到 ABS_FLOOR 以下 —— 整批被丢弃。
+  // 当时的覆盖率分母是「所有词条 idf 之和」，切词切出的「重启插件」「启插」
+  // 这两个全库 0 命中的词各拿满权重 1.0，把分母撑到 2.03，真实命中
+  // （重启 0.27 + 插件 0.20）覆盖率只剩 0.19，乘下限后整批落到 ABS_FLOOR 以下。
+  // 现在分母是「查询的字符数」，无意义的 bigram 不命中就只是不贡献覆盖率。
   const entries = [
     { date: '2026-10-24', file: 'x.md', line: 1, num: 1, title: '改插件源码必须重启 DSH 才生效',
       body: ['正文'], items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10 },
   ];
   const tokens = tokenize('重启插件');
   const idf = buildIdf(entries, tokens);
-  assert.equal(idf.get('重启插件'), 0, '全库 0 出现的词权重必须是 0，否则会撑大分母');
+  assert.equal(idf.get('重启插件'), 0, '全库 0 出现的词权重必须是 0');
   assert.equal(idf.get('启插'), 0, '同上');
 
   const r = search(entries, '重启插件', 3);
-  assert.equal(r.hits.length, 1, `该命中却没命中 —— idf 分母又算错了`);
+  assert.equal(r.hits.length, 1, '该命中却没命中 —— 覆盖率分母又退回去了');
+});
+
+test('检索：只命中半个查询不该靠通用词混进来', async () => {
+  // 真机 bug：搜「机器学习模型训练」时切出「机器」「模型」两个通用 bigram，
+  // 它们在某条日志里都出现过，字符覆盖率算到 0.5。线性折算还剩 0.57 的分数，
+  // 足够越过 ABS_FLOOR 混进结果。现在覆盖率按平方折算，0.5 只剩 0.29。
+  const entries = [];
+  for (let i = 1; i <= 20; i++) {
+    entries.push({
+      date: '2026-10-20', file: 'x.md', line: i, num: i,
+      title: `第 ${i} 条`,
+      body: ['这台机器的模型参数调过了'],
+      items: [], fence: [], time: '00:00:00', tier: 'A', chars: 10,
+    });
+  }
+  const r = search(entries, '机器学习模型训练', 3);
+  assert.equal(r.hits.length, 0, '只覆盖查询一半的通用 bigram 命中应当被压到下限以下');
 });
 
 test('检索：常见词不该盖过稀有词', async () => {
