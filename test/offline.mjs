@@ -36,7 +36,7 @@ import {
   pathStampsChangedSince,
   recordProbe,
 } from '../lib/index.js';
-import { tokenize, buildIdf, search } from '../lib/query.js';
+import { tokenize, buildIdf, search, normalizeUserText } from '../lib/query.js';
 
 // ---------------------------------------------------------------------------
 // 脚手架：临时工作区 + mock 服务
@@ -1099,6 +1099,107 @@ test('worklog_query：每次调用都写一条埋点', async (t) => {  const roo
   assert.equal(lines[0].query, '时间戳');
   assert.equal(typeof lines[0].at, 'string');
   assert.equal(typeof lines[0].hits, 'number');
+});
+
+test('normalizeUserText：剥掉寒暄，留下实质内容', () => {
+  // 为什么要剥：覆盖率的分母是查询串字符数（query.js 的 coverageOf），
+  // 「你好，能不能帮我看看…」这类前缀一个都不可能出现在日志里，
+  // 却实打实地把分母撑大 —— 分母虚高，覆盖率上不去，ABS_FLOOR 一卡整批消失。
+  assert.equal(normalizeUserText('你好，帮我看看插件为什么不生效'), '插件为什么不生效');
+  assert.equal(normalizeUserText('麻烦你查一下 git status 为什么会造脏文件'), 'git status 为什么会造脏文件');
+  assert.equal(normalizeUserText('请问日志生成器怎么跑'), '日志生成器怎么跑');
+  // 「我想问一下」必须整体剥掉，不能只剩「一下」这半截残渣 —— 正则按长度倒序拼接
+  // 就是为了这个（`/g` 是位置驱动的，短候选排前面会先吃掉长候选的前半截）。
+  assert.equal(normalizeUserText('我想问一下，检索的覆盖率是怎么算的'), '检索的覆盖率是怎么算的');
+  assert.equal(normalizeUserText('谢谢'), '', '只剩寒暄就该返回空串，别拿去查');
+  assert.equal(normalizeUserText(''), '');
+  assert.equal(normalizeUserText(undefined), '');
+  // 只有标点和一个字也算不上实质内容 —— 拿去查只会命中一切。
+  assert.equal(normalizeUserText('？！。'), '');
+  assert.equal(normalizeUserText('嗯'), '');
+});
+
+test('normalizeUserText：超长时从尾部截断，阈值内原样返回', () => {
+  // 从尾部取的理由：用户提问的实质内容通常在句尾（「…为什么会这样」），
+  // 前面往往是铺垫。
+  const short = '改插件需要重启吗';
+  assert.equal(normalizeUserText(short, 300), short, '阈值内不该动它');
+
+  const long = `${'铺垫'.repeat(200)}真正的技术问题在句尾`;
+  const cut = normalizeUserText(long, 10);
+  assert.equal(cut.length, 10, '应当截到 maxChars');
+  assert.equal(cut, '真正的技术问题在句尾', '应当保留尾部而不是头部');
+
+  // 换行必须压成空格：tokenize 按空白切分，留着换行只是白给分母加字符。
+  assert.equal(normalizeUserText('第一行\n\n第二行'), '第一行 第二行');
+});
+
+test('worklog_query：写对照埋点，记模型词与原话各查到什么', async (t) => {
+  // 要回答的问题只有一个：换输入源到底有没有收益。单看任何一边都不算数 ——
+  // 真正有信息量的是 agree（两边 top1 是不是同一条）。
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': [
+      '# 2026-10-20',
+      '',
+      logEntry(1, '09:00:00', 'A', '改插件源码必须重启 DSH 才生效', '热重载不覆盖插件本体。'),
+      '',
+      logEntry(2, '10:00:00', 'A', '日志看板交付', '四屏全部验收通过。'),
+      '',
+    ].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const session = { header: {} };
+  const agent = makeAgent(session);
+
+  // 模拟一轮：用户说完话（累进 userText），然后模型才调工具。
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'user/message',
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: '你好，改插件源码为什么没生效' }] },
+  });
+  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'worklog_query', arguments: '{"query":"重启插件"}' } });
+  await tool.execute({ query: '重启插件' }, { agent });
+
+  const lines = readFileSync(join(root, '.dsh', 'worklog-probe.jsonl'), 'utf8')
+    .trim().split('\n').map((l) => JSON.parse(l));
+  const cmp = lines.find((x) => x.tool === 'probe-compare');
+  assert.ok(cmp, '没有写对照埋点 —— 就没法回答「换输入源有没有收益」');
+  assert.equal(cmp.query, '重启插件');
+  assert.equal(cmp.userText, '改插件源码为什么没生效', '寒暄应当已被剥掉');
+  assert.equal(typeof cmp.queryHits, 'number');
+  assert.equal(typeof cmp.userHits, 'number');
+  assert.equal(typeof cmp.agree, 'boolean');
+  assert.ok('queryTopRankInUser' in cmp, '要记下模型词的 top1 在原话结果里排第几');
+  // 只记定位与分数，不记标题 —— 标题里常含查询词，攒多了又是新的自指污染。
+  if (cmp.queryTop !== null) {
+    assert.deepEqual(Object.keys(cmp.queryTop).sort(), ['date', 'num', 'score']);
+  }
+});
+
+test('worklog_query：用户原话为空时不该写对照埋点', async (t) => {
+  // 没有原话就无从对照。写一条全是 null 的记录只会污染统计口径。
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const agent = makeAgent({ header: {} });
+
+  await tool.execute({ query: '时间戳' }, { agent });
+
+  const lines = readFileSync(join(root, '.dsh', 'worklog-probe.jsonl'), 'utf8')
+    .trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(lines.filter((x) => x.tool === 'probe-compare').length, 0,
+    '没有用户原话时不该写对照埋点');
+  assert.equal(lines.filter((x) => x.tool === 'worklog_query').length, 1,
+    '普通埋点仍然要写');
 });
 
 // ---------------------------------------------------------------------------
