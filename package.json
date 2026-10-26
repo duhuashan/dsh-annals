@@ -1,8 +1,8 @@
 {
-  "name": "dsh-worklog",
-  "version": "0.4.1",
+  "name": "dsh-annals",
+  "version": "0.5.0",
   "type": "module",
-  "description": "日志系统：注册 worklog 技能、常驻注入日志规矩、轮次收尾提醒补写、一次初始化（日志目录 + 索引生成器 + git）。",
+  "description": "日志系统：注册 annals 技能、常驻注入日志规矩、轮次收尾提醒补写、一次初始化（日志目录 + 索引生成器 + git）。",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./client/client.js",
@@ -23,11 +23,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/duhuashan/dsh-worklog.git"
+    "url": "git+https://github.com/duhuashan/dsh-annals.git"
   },
-  "homepage": "https://github.com/duhuashan/dsh-worklog#readme",
+  "homepage": "https://github.com/duhuashan/dsh-annals#readme",
   "bugs": {
-    "url": "https://github.com/duhuashan/dsh-worklog/issues"
+    "url": "https://github.com/duhuashan/dsh-annals/issues"
   },
   "dsh": {
     "bundle": {
@@ -46,7 +46,7 @@
   },
   "keywords": [
     "dsh",
-    "worklog",
+    "annals",
     "logging",
     "journal"
   ],

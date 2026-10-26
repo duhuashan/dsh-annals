@@ -6,7 +6,7 @@
 // 「调用它、断言它退出码为 0、断言输出含『全部通过』」包成一条用例。
 //
 // 顺带解决另一个问题：e2e-sandbox.mjs 的默认目标目录是
-// `%TEMP%\worklog-e2e-<pid>`，每次 PID 不同，跑完不自删 —— 会一直攒垃圾。
+// `%TEMP%\annals-e2e-<pid>`，每次 PID 不同，跑完不自删 —— 会一直攒垃圾。
 // 这里给它一个 mkdtemp 出来的目录，finally 里删掉。
 
 import { test } from 'node:test';
@@ -21,7 +21,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(HERE, 'e2e-sandbox.mjs');
 
 test('端到端：真实磁盘上初始化一个新工作区', () => {
-  const root = mkdtempSync(join(tmpdir(), 'worklog-e2e-'));
+  const root = mkdtempSync(join(tmpdir(), 'annals-e2e-'));
   try {
     const out = execFileSync(process.execPath, [SCRIPT, root], {
       encoding: 'utf8',

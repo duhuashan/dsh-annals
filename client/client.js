@@ -1,8 +1,8 @@
 /**
- * dsh-worklog · Client 半（设置面板里的「日志系统」页）
+ * dsh-annals · Client 半（设置面板里的「日志系统」页）
  *
  * 手写模块，不需要构建工具：`id` 必须等于 package.json 的包名。
- * 六个开关直接读写 Host 的 settings 命名空间 `worklog`
+ * 六个开关直接读写 Host 的 settings 命名空间 `annals`
  * （Provider 是 `@deepseek-ai/dsh-settings`，Transport 是
  * `ctx.remote.settings`，与「终端」「Agent 循环」等官方设置页同一套机制）。
  *
@@ -12,24 +12,24 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-worklog',
+  id: 'dsh-annals',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
 
     /** 设置导航里的唯一标识。 */
-    const SECTION_ID = 'worklog-settings';
+    const SECTION_ID = 'annals-settings';
 
-    /** 命名空间候选：profile 条目 id 是 `worklog`；少数组合会带 include: 前缀。 */
-    const NS_CANDIDATES = ['worklog'];
+    /** 命名空间候选：profile 条目 id 是 `annals`；少数组合会带 include: 前缀。 */
+    const NS_CANDIDATES = ['annals'];
 
     /** 六个配置字段：键、标题、说明。 */
     const FIELDS = [
       ['enabled', '日志系统', '关掉后不注册技能、规矩、工具和提醒（已有日志数据不受影响）'],
-      ['skill', '注册 worklog 技能', '模型可以通过技能加载日志写法'],
+      ['skill', '注册 annals 技能', '模型可以通过技能加载日志写法'],
       ['section', '常驻注入日志规矩', '每轮系统提示词里带六条日志规矩，不依赖技能加载'],
       ['reminder', '轮次收尾提醒', '改了文件但没写今天日志时提醒一次'],
-      ['initTool', 'worklog_init 工具', '用于启用日志系统，或记录「本工作区不启用」'],
+      ['initTool', 'annals_init 工具', '用于启用日志系统，或记录「本工作区不启用」'],
       ['skipSubagents', '跳过子代理会话', '子代理不提醒、不初始化'],
     ];
 
@@ -91,7 +91,7 @@ window.__ModuleLoader__.load({
         const hit = rows.find((row) => row.ns === name);
         if (hit) return hit;
       }
-      return rows.find((row) => /(^|[:/])worklog$/.test(String(row.ns || ''))) || null;
+      return rows.find((row) => /(^|[:/])annals$/.test(String(row.ns || ''))) || null;
     }
 
     /** 生效值：只把 false 当关闭，缺失=默认开。 */
@@ -119,7 +119,7 @@ window.__ModuleLoader__.load({
     }
 
     /** 设置面板里的「日志系统」页。 */
-    function WorklogPage() {
+    function AnnalsPage() {
       const [state, setState] = React.useState({ status: 'loading', error: null, row: null, namespaces: [] });
       const [draft, setDraft] = React.useState(null);
       const [saving, setSaving] = React.useState(false);
@@ -231,7 +231,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { style: descStyle },
-            '没有找到 worklog 命名空间。当前 Host 提供的设置命名空间：' +
+            '没有找到 annals 命名空间。当前 Host 提供的设置命名空间：' +
               (state.namespaces.length ? state.namespaces.join('、') : '（空）'),
           ),
           h(BackLink, { onClick: load }),
@@ -320,10 +320,10 @@ window.__ModuleLoader__.load({
             ctx.slots.inject('settings.section', () =>
               ctx.slots.register(
                 { name: 'settings.section', id: SECTION_ID, order: 55, label: '日志系统' },
-                WorklogPage,
+                AnnalsPage,
               ),
             ),
-          'worklog: settings page',
+          'annals: settings page',
         );
       },
     };

@@ -1,4 +1,4 @@
-// dsh-worklog 离线测试 —— 不需要 DSH 宿主，mock 掉 ctx 的六个服务。
+// dsh-annals 离线测试 —— 不需要 DSH 宿主，mock 掉 ctx 的六个服务。
 // 运行：node --test test/offline.mjs
 
 import { test } from 'node:test';
@@ -44,7 +44,7 @@ import { tokenize, buildIdf, search, normalizeUserText } from '../lib/query.js';
 
 /** @returns {string} 一次性的工作区根。 */
 function makeRoot() {
-  return mkdtempSync(join(tmpdir(), 'dsh-worklog-test-'));
+  return mkdtempSync(join(tmpdir(), 'dsh-annals-test-'));
 }
 
 /**
@@ -185,7 +185,7 @@ function makeAgent(session, injects = []) {
 // ---------------------------------------------------------------------------
 
 test('模块导出：名字与服务依赖', () => {
-  assert.equal(name, 'worklog');
+  assert.equal(name, 'annals');
   assert.deepEqual(inject, ['skills', 'systemPrompt', 'tools', 'fs', 'shell', 'workingDirectory']);
 });
 
@@ -195,7 +195,7 @@ test('Config：导出 Standard Schema，validate 填充默认值', () => {
   assert.ok(Config, '应导出 Config');
   assert.equal(Config['~standard'].vendor, 'schemastery');
 
-  // 六个字段必须都是 volatile，否则 settings.describe() 里不会出现 worklog 命名空间。
+  // 六个字段必须都是 volatile，否则 settings.describe() 里不会出现 annals 命名空间。
   for (const field of ['enabled', 'skill', 'section', 'reminder', 'initTool', 'skipSubagents']) {
     assert.equal(Config.dict[field].meta.volatile, true, field + ' 应为 volatile');
   }
@@ -233,11 +233,11 @@ test('deepFreeze 递归冻结', () => {
   assert.throws(() => { value.a.b = 2; });
 });
 
-test('makeUserMessage：user + notice + worklog 来源', () => {
+test('makeUserMessage：user + notice + annals 来源', () => {
   const message = makeUserMessage('正文', '摘要');
   assert.equal(message.role, 'user');
   assert.equal(message.content[0].text, '正文');
-  assert.equal(message.source.kind, 'worklog');
+  assert.equal(message.source.kind, 'annals');
   assert.equal(message.source.form, 'notice');
   assert.equal(message.source.summary, '摘要');
   assert.ok(Object.isFrozen(message));
@@ -359,13 +359,13 @@ test('apply 注册技能、规矩、工具', (t) => {
 
   assert.equal(ctx.registered.skills.length, 1);
   const skill = ctx.registered.skills[0];
-  assert.equal(skill.name, 'worklog');
-  assert.equal(skill.source, 'dsh-worklog', 'source 缺失会让 skill 工具加载时报 source must be a string');
+  assert.equal(skill.name, 'annals');
+  assert.equal(skill.source, 'dsh-annals', 'source 缺失会让 skill 工具加载时报 source must be a string');
   assert.ok(skill.content.length > 2500, `技能正文太短：${skill.content.length}`);
   assert.ok(skill.description.length <= 500, `描述超 500 字符：${skill.description.length}`);
 
   assert.equal(ctx.registered.sections.length, 1);
-  assert.equal(ctx.registered.sections[0].name, 'worklog');
+  assert.equal(ctx.registered.sections[0].name, 'annals');
   assert.match(ctx.registered.sections[0].text, /日志系统/);
   // 档位指令必须两半都在：只写「没说就是 B」会让 AI 把用户的「简单记」当空气
   // （2026-10-26 第 20 条就是踩这个坑记成了 B 档，用户当场指出）
@@ -373,24 +373,24 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.match(ctx.registered.sections[0].text, /详细记/, '注入段缺「用户说详细记→C」这半句');
 
   assert.equal(ctx.registered.tools.length, 3);
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
-  assert.equal(tool.name, 'worklog_init');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_init');
+  assert.equal(tool.name, 'annals_init');
   assert.equal(tool.parameters.type, 'object');
   assert.deepEqual(tool.parameters.required, ['enabled']);
   assert.equal(tool.output.schema.type, 'string');
   assert.equal(typeof tool.output.render, 'function');
   assert.deepEqual(tool.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
 
-  const q = ctx.registered.tools.find((x) => x.name === 'worklog_query');
-  assert.ok(q, '没有注册 worklog_query —— 检索入口是这一步的全部目的');
+  const q = ctx.registered.tools.find((x) => x.name === 'annals_query');
+  assert.ok(q, '没有注册 annals_query —— 检索入口是这一步的全部目的');
   assert.equal(q.parameters.type, 'object');
   assert.deepEqual(q.parameters.required, ['query']);
   assert.equal(q.output.schema.type, 'string');
   assert.equal(typeof q.output.render, 'function');
   assert.deepEqual(q.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
 
-  const links = ctx.registered.tools.find((x) => x.name === 'worklog_links');
-  assert.ok(links, '没有注册 worklog_links —— 双向链接是这一步的全部目的');
+  const links = ctx.registered.tools.find((x) => x.name === 'annals_links');
+  assert.ok(links, '没有注册 annals_links —— 双向链接是这一步的全部目的');
   assert.equal(links.parameters.type, 'object');
   assert.deepEqual(links.parameters.required, ['target']);
   assert.deepEqual(links.parameters.properties.direction.enum, ['both', 'in', 'out']);
@@ -493,8 +493,8 @@ test('未决定时注入一次引导，已启用时静默', async (t) => {
   await tick();
 
   assert.equal(injects.length, 1);
-  assert.equal(injects[0].source.kind, 'worklog');
-  assert.match(injects[0].content[0].text, /worklog_init/);
+  assert.equal(injects[0].source.kind, 'annals');
+  assert.match(injects[0].content[0].text, /annals_init/);
 
   // 初始化后新会话不再注入
   await initWorkspace(ctx, root);
@@ -542,7 +542,7 @@ test('提醒：改过文件且没写日志 → steer 一次，同轮不重复', 
   emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'write', arguments: JSON.stringify({ file_path: 'src/a.js' }) } });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
-  assert.equal(agent.steers[0].source.kind, 'worklog');
+  assert.equal(agent.steers[0].source.kind, 'annals');
 
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
   assert.equal(agent.steers.length, 1);
@@ -869,7 +869,7 @@ test('索引提醒：用户说「不用记」也压住索引提醒', async (t) =
 // 工具
 // ---------------------------------------------------------------------------
 
-test('worklog_init(enabled=true)：初始化并让本会话可提醒', async (t) => {
+test('annals_init(enabled=true)：初始化并让本会话可提醒', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
@@ -890,7 +890,7 @@ test('worklog_init(enabled=true)：初始化并让本会话可提醒', async (t)
   assert.equal(agent.steers.length, 1);
 });
 
-test('worklog_init(enabled=false)：写拒绝记录，之后静默', async (t) => {
+test('annals_init(enabled=false)：写拒绝记录，之后静默', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
@@ -912,17 +912,17 @@ test('worklog_init(enabled=false)：写拒绝记录，之后静默', async (t) =
   assert.equal(injects.length, 0);
 });
 
-test('worklog_init 没有 live agent 时报错', async (t) => {
+test('annals_init 没有 live agent 时报错', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_init');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_init');
   await assert.rejects(() => tool.execute({ enabled: true }, {}), /live agent/);
 });
 
 // ---------------------------------------------------------------------------
-// worklog_query：检索入口
+// annals_query：检索入口
 // ---------------------------------------------------------------------------
 
 /** 造一份最小日志目录，供检索用例共用。 */
@@ -938,7 +938,7 @@ function logEntry(num, time, tier, title, body) {
   return `${num}. [time=${time}][tier=${tier}] **${title}**\n\n   W 正文：${body}\n`;
 }
 
-test('worklog_query：命中标题并给锚点', async (t) => {
+test('annals_query：命中标题并给锚点', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   makeLogDir(root, {
@@ -953,7 +953,7 @@ test('worklog_query：命中标题并给锚点', async (t) => {
   });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   const out = await tool.execute({ query: '时间戳' }, { agent });
@@ -964,7 +964,7 @@ test('worklog_query：命中标题并给锚点', async (t) => {
   assert.match(out, /日志\\2026-10-20\.md:\d+/);
 });
 
-test('worklog_query：查不到时明说查不到，不硬凑', async (t) => {
+test('annals_query：查不到时明说查不到，不硬凑', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   makeLogDir(root, {
@@ -972,7 +972,7 @@ test('worklog_query：查不到时明说查不到，不硬凑', async (t) => {
   });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   const out = await tool.execute({ query: '完全不存在的词xyz' }, { agent });
@@ -982,28 +982,28 @@ test('worklog_query：查不到时明说查不到，不硬凑', async (t) => {
   assert.match(out, /不代表从未做过/);
 });
 
-test('worklog_query：日志目录不存在时不抛异常', async (t) => {
+test('annals_query：日志目录不存在时不抛异常', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
   const out = await tool.execute({ query: '随便什么' }, { agent });
   assert.match(out, /还没有任何条目/);
 });
 
-test('worklog_query：空查询直接拒绝，不去扫盘', async (t) => {
+test('annals_query：空查询直接拒绝，不去扫盘', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
   assert.match(await tool.execute({ query: '   ' }, { agent }), /查询是空的/);
 });
 
-test('worklog_query：limit 被夹在 1..20', async (t) => {
+test('annals_query：limit 被夹在 1..20', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const files = { '2026-10-20.md': ['# 2026-10-20', ''] };
@@ -1014,7 +1014,7 @@ test('worklog_query：limit 被夹在 1..20', async (t) => {
   makeLogDir(root, { '2026-10-20.md': files['2026-10-20.md'].join('\n') });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   const out = await tool.execute({ query: '同一件事', limit: 999 }, { agent });
@@ -1091,24 +1091,24 @@ test('检索：全库都没有的词返回 0 条，不硬凑', async () => {
   assert.equal(r.hits.length, 0, '只靠一个通用 bigram 蹭上的命中应当被 ABS_FLOOR 挡掉');
 });
 
-test('worklog_query：每次调用都写一条埋点', async (t) => {  const root = makeRoot();
+test('annals_query：每次调用都写一条埋点', async (t) => {  const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   makeLogDir(root, {
     '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
   });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   await tool.execute({ query: '时间戳' }, { agent });
   await tool.execute({ query: '看板' }, { agent });
 
-  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const probe = join(root, '.dsh', 'annals-probe.jsonl');
   assert.ok(existsSync(probe), '没有写埋点 —— 两周后就无从判断这扇门有没有人推');
   const lines = readFileSync(probe, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(lines.length, 2);
-  assert.equal(lines[0].tool, 'worklog_query');
+  assert.equal(lines[0].tool, 'annals_query');
   assert.equal(lines[0].query, '时间戳');
   assert.equal(typeof lines[0].at, 'string');
   assert.equal(typeof lines[0].hits, 'number');
@@ -1147,7 +1147,7 @@ test('normalizeUserText：超长时从尾部截断，阈值内原样返回', () 
   assert.equal(normalizeUserText('第一行\n\n第二行'), '第一行 第二行');
 });
 
-test('worklog_query：写对照埋点，记模型词与原话各查到什么', async (t) => {
+test('annals_query：写对照埋点，记模型词与原话各查到什么', async (t) => {
   // 要回答的问题只有一个：换输入源到底有没有收益。单看任何一边都不算数 ——
   // 真正有信息量的是 agree（两边 top1 是不是同一条）。
   const root = makeRoot();
@@ -1164,7 +1164,7 @@ test('worklog_query：写对照埋点，记模型词与原话各查到什么', a
   });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const session = { header: {} };
   const agent = makeAgent(session);
 
@@ -1174,10 +1174,10 @@ test('worklog_query：写对照埋点，记模型词与原话各查到什么', a
     type: 'user/message',
     data: { source: { kind: 'user' }, content: [{ type: 'text', text: '你好，改插件源码为什么没生效' }] },
   });
-  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'worklog_query', arguments: '{"query":"重启插件"}' } });
+  emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'annals_query', arguments: '{"query":"重启插件"}' } });
   await tool.execute({ query: '重启插件' }, { agent });
 
-  const lines = readFileSync(join(root, '.dsh', 'worklog-probe.jsonl'), 'utf8')
+  const lines = readFileSync(join(root, '.dsh', 'annals-probe.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l));
   const cmp = lines.find((x) => x.tool === 'probe-compare');
   assert.ok(cmp, '没有写对照埋点 —— 就没法回答「换输入源有没有收益」');
@@ -1193,7 +1193,7 @@ test('worklog_query：写对照埋点，记模型词与原话各查到什么', a
   }
 });
 
-test('worklog_query：用户原话为空时不该写对照埋点', async (t) => {
+test('annals_query：用户原话为空时不该写对照埋点', async (t) => {
   // 没有原话就无从对照。写一条全是 null 的记录只会污染统计口径。
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -1202,16 +1202,16 @@ test('worklog_query：用户原话为空时不该写对照埋点', async (t) => 
   });
   const ctx = makeCtx(root);
   apply(ctx, {});
-  const tool = ctx.registered.tools.find((x) => x.name === 'worklog_query');
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   await tool.execute({ query: '时间戳' }, { agent });
 
-  const lines = readFileSync(join(root, '.dsh', 'worklog-probe.jsonl'), 'utf8')
+  const lines = readFileSync(join(root, '.dsh', 'annals-probe.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(lines.filter((x) => x.tool === 'probe-compare').length, 0,
     '没有用户原话时不该写对照埋点');
-  assert.equal(lines.filter((x) => x.tool === 'worklog_query').length, 1,
+  assert.equal(lines.filter((x) => x.tool === 'annals_query').length, 1,
     '普通埋点仍然要写');
 });
 
@@ -1398,7 +1398,7 @@ test('漏查探测：写了日志提过的文件但没查 → 记一条 probe-mi
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const probe = join(root, '.dsh', 'annals-probe.jsonl');
   assert.ok(existsSync(probe), '该记漏查却没有埋点');
   const rec = JSON.parse(readFileSync(probe, 'utf8').trim().split('\n')[0]);
   assert.equal(rec.tool, 'probe-miss');
@@ -1412,7 +1412,7 @@ test('漏查探测：这轮查过了就不再记', async (t) => {
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
-    data: { name: 'worklog_query', arguments: JSON.stringify({ query: 'build-index' }) },
+    data: { name: 'annals_query', arguments: JSON.stringify({ query: 'build-index' }) },
   });
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
@@ -1420,7 +1420,7 @@ test('漏查探测：这轮查过了就不再记', async (t) => {
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const probe = join(root, '.dsh', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
   assert.equal(misses.length, 0, '查过了就不该记成漏查');
@@ -1435,7 +1435,7 @@ test('漏查探测：日志里没提过这些词 → 不记（这是在做新东
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const probe = join(root, '.dsh', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
   assert.equal(misses.length, 0);
@@ -1481,7 +1481,7 @@ test('漏查探测：probe=false 时完全不记', async (t) => {
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'worklog-probe.jsonl');
+  const probe = join(root, '.dsh', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   assert.equal(lines.filter((l) => JSON.parse(l).tool === 'probe-miss').length, 0);
 });
@@ -1490,7 +1490,7 @@ test('漏查探测：probe=false 时完全不记', async (t) => {
 // 自指误报：插件自己写的状态文件不能算「工作区改过」
 // ---------------------------------------------------------------------------
 
-test('自指误报：只调 worklog_query、什么都没改 → 不催写日志', async (t) => {
+test('自指误报：只调 annals_query、什么都没改 → 不催写日志', async (t) => {
   const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   makeLogDir(root, {
@@ -1505,12 +1505,12 @@ test('自指误报：只调 worklog_query、什么都没改 → 不催写日志'
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
-  // 一轮里唯一发生的事：调了一次检索工具。它会往 .dsh\worklog-probe.jsonl 追加一行。
+  // 一轮里唯一发生的事：调了一次检索工具。它会往 .dsh\annals-probe.jsonl 追加一行。
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
-    data: { name: 'worklog_query', arguments: JSON.stringify({ query: 'build-index' }) },
+    data: { name: 'annals_query', arguments: JSON.stringify({ query: 'build-index' }) },
   });
-  recordProbe(ctx, root, { tool: 'worklog_query', query: 'build-index', hits: 3 });
+  recordProbe(ctx, root, { tool: 'annals_query', query: 'build-index', hits: 3 });
   const before = agent.steers.length;
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
@@ -1533,7 +1533,7 @@ test('自指误报：状态文件被排除，但 .dsh\\skills 下的改动照常
   // 插件自己写状态文件：不该被看见。
   mkdirSync(join(root, '.dsh'), { recursive: true });
   writeFileSync(join(root, '.dsh', 'log-system.json'), '{"enabled":true}\n', 'utf8');
-  recordProbe(ctx, root, { tool: 'worklog_query', query: 'x', hits: 1 });
+  recordProbe(ctx, root, { tool: 'annals_query', query: 'x', hits: 1 });
   assert.equal(workspaceChangedSince(before, snapshotWorkspaceStamp(root)), false, '插件自己的状态文件不该算工作区改动');
 
   // 用户/模型在 .dsh\skills 里干正事：必须照常算数 —— 不能因为排除就整个跳过 .dsh\。
@@ -1925,7 +1925,7 @@ test('isInsideWorkspace：路径判定，判不了的一律当成在里面', () 
   assert.equal(isInsideWorkspace(root, join(root, '..', 'other', 'x.md')), false, '.. 绕出去不算');
   assert.equal(isInsideWorkspace(root, join('E:', 'x.md')), false, '跨盘不算');
   assert.equal(
-    isInsideWorkspace(root, join('C:', 'Users', 'brilliant', '.dsh', 'local-plugins', 'dsh-worklog', 'lib', 'index.js')),
+    isInsideWorkspace(root, join('C:', 'Users', 'brilliant', '.dsh', 'local-plugins', 'dsh-annals', 'lib', 'index.js')),
     false,
     '改插件本体不算改工作区',
   );
@@ -2018,7 +2018,7 @@ test('只往临时目录写：命令看着像在写，也不算改', async (t) =
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
   // 工作区外真写了一个文件 —— 快照只看工作区，所以看不见
-  const outside = join(tmpdir(), `worklog-outside-${process.pid}.txt`);
+  const outside = join(tmpdir(), `annals-outside-${process.pid}.txt`);
   writeFileSync(outside, 'x\n', 'utf8');
   t.after(() => rmSync(outside, { force: true }));
   emit(ctx, 'session/event', session, {
@@ -2158,7 +2158,7 @@ test('工作区外的 shell 写（关键词认不出的写法）→ 点名路径
 
   // 故意选一个**不在临时目录**的工作区外路径：临时路径会被豁免掉，
   // 而交付物默认落在桌面、用户目录这些地方，正是要覆盖的形态。
-  const outside = join(homedir(), `.worklog-pathstamp-${process.pid}.txt`);
+  const outside = join(homedir(), `.annals-pathstamp-${process.pid}.txt`);
   t.after(() => rmSync(outside, { force: true }));
   rmSync(outside, { force: true });
 
@@ -2193,7 +2193,7 @@ test('同一路径被两条命令先后点到：第二次不覆盖轮首基准',
   emit(ctx, 'agent/created', { agent, source: 'startup' });
   await tick();
 
-  const outside = join(homedir(), `.worklog-pathstamp-twice-${process.pid}.txt`);
+  const outside = join(homedir(), `.annals-pathstamp-twice-${process.pid}.txt`);
   t.after(() => rmSync(outside, { force: true }));
   rmSync(outside, { force: true });
 
@@ -2222,7 +2222,7 @@ test('点名路径没变、其他证据也没有 → 不催（这一路不制造
   await tick();
 
   // 一个真实存在且全程没动过的文件
-  const outside = join(homedir(), `.worklog-pathstamp-still-${process.pid}.txt`);
+  const outside = join(homedir(), `.annals-pathstamp-still-${process.pid}.txt`);
   t.after(() => rmSync(outside, { force: true }));
   writeFileSync(outside, 'x\n', 'utf8');
 
@@ -2268,15 +2268,15 @@ test('宿主自己在持续写的目录不进点名集合', () => {
   }
 
   // 反向护栏：这次收紧不能把 f1d99d1 要覆盖的东西一起收掉。
-  const outside = join(homedir(), `.worklog-pathstamp-scope-${process.pid}.txt`);
+  const outside = join(homedir(), `.annals-pathstamp-scope-${process.pid}.txt`);
   assert.deepEqual(
     collectShellPaths(`node -e "require('fs').writeFileSync('${outside}','x')"`),
     [outside],
     '工作区外的具体文件仍要点名 —— 这是补盲区的唯一入口',
   );
   assert.deepEqual(
-    collectShellPaths(`Get-Content 'C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-worklog\\lib\\index.js'`),
-    ['C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-worklog\\lib\\index.js'],
+    collectShellPaths(`Get-Content 'C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-annals\\lib\\index.js'`),
+    ['C:\\Users\\brilliant\\.dsh\\local-plugins\\dsh-annals\\lib\\index.js'],
     '插件自己的源码不是宿主持续写的路径，不能顺手排除',
   );
 });
@@ -2297,7 +2297,7 @@ test('只读过会话记录、文件被别处追加 → 不催（这一路不制
   // 不用真的会话目录：测试不该碰用户正在用的那一份。
   const sessionsDir = join(homedir(), '.dsh', 'sessions');
   mkdirSync(sessionsDir, { recursive: true });
-  const workDir = mkdtempSync(join(sessionsDir, 'dsh-worklog-test-'));
+  const workDir = mkdtempSync(join(sessionsDir, 'dsh-annals-test-'));
   t.after(() => rmSync(workDir, { recursive: true, force: true }));
   const transcript = join(workDir, 'session.v4.jsonl.zstd');
   writeFileSync(transcript, 'AAAA', 'utf8');

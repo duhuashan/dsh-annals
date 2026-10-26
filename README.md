@@ -1,10 +1,10 @@
-# dsh-worklog
+# dsh-annals
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 给 AI 一份跨会话的记忆：每天一个日志文件、一份可检索的索引、一个独立的 git 仓库。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.4.1 | [Releases](https://github.com/duhuashan/dsh-worklog/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.5.0 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
 
 ## 为什么装它
 
@@ -30,7 +30,7 @@ AI 的每次会话都开在一张白纸上。上一轮敲定的方案、踩过�
 
 | 变化 | 具体表现 |
 |---|---|
-| **不用重复解释** | 干了三个月的事，AI 用 `worklog_query` 一次调用查得到当时为什么这么定 |
+| **不用重复解释** | 干了三个月的事，AI 用 `annals_query` 一次调用查得到当时为什么这么定 |
 | **坑只踩一次** | 失败记录留在日志里，下次撞上同一处，它先查到再动手 |
 | **决定有据可查** | 三个月后你自己也忘了当初为什么排除方案 A —— 日志里有 |
 | **能交接** | 换个 AI、换个人，读日志就能接上，不用口述前情 |
@@ -39,10 +39,10 @@ AI 的每次会话都开在一张白纸上。上一轮敲定的方案、踩过�
 
 ## 安装
 
-从 [Releases](https://github.com/duhuashan/dsh-worklog/releases) 下载最新的 `dsh-worklog-<版本>.tgz`，然后：
+从 [Releases](https://github.com/duhuashan/dsh-annals/releases) 下载最新的 `dsh-annals-<版本>.tgz`，然后：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-worklog-0.4.1.tgz
+dsh plugin --profile web add C:\path\to\dsh-annals-0.5.0.tgz
 ```
 
 装完**重启 DSH** 生效。
@@ -50,12 +50,12 @@ dsh plugin --profile web add C:\path\to\dsh-worklog-0.4.1.tgz
 开发时可以从源码目录链进去（依赖不会自动装，需自备 `@deepseek-ai/schemastery`）：
 
 ```powershell
-dsh plugin --profile web add link:C:/path/to/dsh-worklog
+dsh plugin --profile web add link:C:/path/to/dsh-annals
 ```
 
 > **两个装完才知道的坑**
 >
-> 1. **本地 tgz 是按绝对路径记的，不是解包副本**。`dsh plugin add` 会在 profile 的 `package.json` 里写下 `"dsh-worklog": "file:D:/path/to/xxx.tgz"` —— tgz 一删，这个 profile 就装不上了。想长期用，把它放到不会被清理的位置。
+> 1. **本地 tgz 是按绝对路径记的，不是解包副本**。`dsh plugin add` 会在 profile 的 `package.json` 里写下 `"dsh-annals": "file:D:/path/to/xxx.tgz"` —— tgz 一删，这个 profile 就装不上了。想长期用，把它放到不会被清理的位置。
 > 2. **从 tgz 装会自动装依赖**（`@deepseek-ai/schemastery`），从 `link:` 装**不会**。这是 pnpm 的行为，不是插件选的。
 
 ## 装完会发生什么
@@ -66,14 +66,14 @@ dsh plugin --profile web add link:C:/path/to/dsh-worklog
 
 > 要不要在本工作区启用日志系统？它会建 `日志\` 目录、索引生成器和一个独立的 git 仓库，我每次干完活会把事情记进去。
 
-- 你说**要** → 它调用 `worklog_init(enabled=true)`，一次建好全部文件
+- 你说**要** → 它调用 `annals_init(enabled=true)`，一次建好全部文件
 - 你说**不要** → 写一条拒绝记录，之后**完全静默**：不询问、不提醒、零副作用
 
-反悔了随时能开：让模型调用 `worklog_init(enabled=true)`，或者删掉 `.dsh\log-system.json` 让它重新问。
+反悔了随时能开：让模型调用 `annals_init(enabled=true)`，或者删掉 `.dsh\log-system.json` 让它重新问。
 
 ### 启用后：初始化建了什么
 
-`worklog_init(enabled=true)` 一次完成，**已存在的文件全部跳过，不覆盖你的数据**：
+`annals_init(enabled=true)` 一次完成，**已存在的文件全部跳过，不覆盖你的数据**：
 
 1. `日志\.gitattributes` —— `*.md` 用 CRLF、`*.mjs` 用 LF
 2. `日志\build-index.mjs` —— 索引生成器，零依赖
@@ -120,53 +120,53 @@ dsh plugin --profile web add link:C:/path/to/dsh-worklog
 | 「记一下」/「先记一下」 | 让模型现在就把当前进展写进日志 |
 | 「简单记」/「详细记」 | 决定这条写多细（A 档 / C 档）；不说默认 B 档 |
 | 「这个不用记」/「别碰日志」 | 本会话不再催写日志 |
-| 「以前那个 X 是怎么弄的？」 | 触发 `worklog_query`，按内容捞历史 |
-| 「这个文件以前哪些条目碰过？」 | 触发 `worklog_links`，按关系反查 |
+| 「以前那个 X 是怎么弄的？」 | 触发 `annals_query`，按内容捞历史 |
+| 「这个文件以前哪些条目碰过？」 | 触发 `annals_links`，按关系反查 |
 
-**判断记不记由模型来做**，它加载 `worklog` 技能后按一份正反清单判断。拿不准会问你一句，日常小事不问也不写。
+**判断记不记由模型来做**，它加载 `annals` 技能后按一份正反清单判断。拿不准会问你一句，日常小事不问也不写。
 
 ## 能力一览
 
 | 能力 | 是什么 | 什么时候用得上 |
 |---|---|---|
-| `worklog` 技能 | 写日志的完整规矩（该不该写、写多细、怎么排版、写完做什么） | 模型要写日志时自动加载 |
+| `annals` 技能 | 写日志的完整规矩（该不该写、写多细、怎么排版、写完做什么） | 模型要写日志时自动加载 |
 | 常驻规矩 | 一段精简版日志规矩，**每轮**都在系统提示里 | 防止「模型没加载技能就忘了要记」 |
 | 轮次提醒 | 轮次收尾时判断这一轮改了文件却没写日志 | 提醒本身不占你注意力，只在它漏记时出现 |
 | 索引新鲜度提醒 | 判断日志写了但索引没重新生成 | 防「写了日志就以为完事」—— 索引不跑，检索永远停在旧快照 |
-| `worklog_init` | 一次初始化整个日志系统 | 首次启用；或反悔后重新启用 |
-| `worklog_query` | **按内容找**：忘了一件事在哪，用关键词捞 | 动手做一件「感觉做过」的事之前 |
-| `worklog_links` | **按关系找**：知道是哪一条，看它引了谁、谁引了它 | 改文件前想知道以前哪些条目碰过它 |
+| `annals_init` | 一次初始化整个日志系统 | 首次启用；或反悔后重新启用 |
+| `annals_query` | **按内容找**：忘了一件事在哪，用关键词捞 | 动手做一件「感觉做过」的事之前 |
+| `annals_links` | **按关系找**：知道是哪一条，看它引了谁、谁引了它 | 改文件前想知道以前哪些条目碰过它 |
 
-`worklog_query` 与 `worklog_links` 不重叠：前者用在「我记得做过但忘了在哪」，后者用在「我知道是哪条，想看它牵到谁」。
+`annals_query` 与 `annals_links` 不重叠：前者用在「我记得做过但忘了在哪」，后者用在「我知道是哪条，想看它牵到谁」。
 
-**都没有自动触发**。插件不会在每轮替你检索再塞进上下文 —— 那会把 prompt 缓存命中率打到 0%，而且意图分类判错等于静默不检索。只有两处被动入口：常驻系统提示里的一句规矩、`worklog` 技能的触发词。是否调用由模型自己决定。
+**都没有自动触发**。插件不会在每轮替你检索再塞进上下文 —— 那会把 prompt 缓存命中率打到 0%，而且意图分类判错等于静默不检索。只有两处被动入口：常驻系统提示里的一句规矩、`annals` 技能的触发词。是否调用由模型自己决定。
 
 ## 配置
 
 插件带一个 GUI 开关页：**设置面板 → 日志系统**。
 
-六个开关读写 Host 的 `worklog` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
+六个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
 
-> 插件页卡片（「插件」→ dsh-worklog）不渲染配置表单 —— 那是 DSH 的既有行为：插件页只显示包信息与运行状态，配置表单由功能包自己注册设置页。
+> 插件页卡片（「插件」→ dsh-annals）不渲染配置表单 —— 那是 DSH 的既有行为：插件页只显示包信息与运行状态，配置表单由功能包自己注册设置页。
 
 ### 九个字段，六个在 GUI 里
 
 | 字段 | 默认 | 含义 | GUI |
 |---|---|---|---|
 | `enabled` | `true` | 总开关 | ✅ |
-| `skill` | `true` | 注册 `worklog` 技能 | ✅ |
+| `skill` | `true` | 注册 `annals` 技能 | ✅ |
 | `section` | `true` | 注入常驻日志规矩 | ✅ |
 | `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ✅ |
-| `initTool` | `true` | 注册 `worklog_init` 工具 | ✅ |
+| `initTool` | `true` | 注册 `annals_init` 工具 | ✅ |
 | `skipSubagents` | `true` | 子代理会话不提醒 | ✅ |
-| `queryTool` | `true` | 注册 `worklog_query` 工具 | ❌ 只能改 YAML |
-| `linksTool` | `true` | 注册 `worklog_links` 工具 | ❌ 只能改 YAML |
-| `probe` | `true` | 漏查探测：只记到 `.dsh\worklog-probe.jsonl`，不注入、不打扰 | ❌ 只能改 YAML |
+| `queryTool` | `true` | 注册 `annals_query` 工具 | ❌ 只能改 YAML |
+| `linksTool` | `true` | 注册 `annals_links` 工具 | ❌ 只能改 YAML |
+| `probe` | `true` | 漏查探测：只记到 `.dsh\annals-probe.jsonl`，不注入、不打扰 | ❌ 只能改 YAML |
 
-没有 GUI（headless / 非 web profile）时，直接在 `cordis.patch.yml` 里 override `worklog` 的 config：
+没有 GUI（headless / 非 web profile）时，直接在 `cordis.patch.yml` 里 override `annals` 的 config：
 
 ```yaml
-- id: worklog
+- id: annals
   config:
     queryTool: false
 ```
@@ -178,7 +178,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-worklog
 ## 卸载
 
 ```powershell
-dsh plugin --profile web remove dsh-worklog
+dsh plugin --profile web remove dsh-annals
 ```
 
 **卸载不删数据**：`日志\`、`.dsh\log-system.json` 都留着。重装后原样接上。
@@ -211,12 +211,12 @@ node --test test/e2e-sandbox.test.mjs   # 真实磁盘端到端
 - **索引新鲜度靠文件修改时间判定，同秒可能漏报**。判据是「今天日志的 mtime > `_日志索引.md` 的 mtime」，同秒写入时不成立。NTFS 精度到 100ns，实际几乎不会撞上。
 - **不扫历史**。不读已完成会话，不生成摘要。
 - **状态是工作区级的**。同一工作区多个会话共享一个状态文件；不同工作区互不影响。
-- **工作区自带同名技能会覆盖插件版**。DSH 的技能优先级是「工作区 `.dsh\skills`（rank 100）> 插件运行时注册（rank 250）」。想让插件版当唯一来源，就别在工作区放 `.dsh\skills\worklog\SKILL.md`。
-- **提醒不显示在 GUI 对话流里**。它走 `agent.steer()`，不是对话气泡。想确认提醒发生过，看会话记录里 `source.kind === "worklog"` 的消息，或从下一轮行为反推。
+- **工作区自带同名技能会覆盖插件版**。DSH 的技能优先级是「工作区 `.dsh\skills`（rank 100）> 插件运行时注册（rank 250）」。想让插件版当唯一来源，就别在工作区放 `.dsh\skills\annals\SKILL.md`。
+- **提醒不显示在 GUI 对话流里**。它走 `agent.steer()`，不是对话气泡。想确认提醒发生过，看会话记录里 `source.kind === "annals"` 的消息，或从下一轮行为反推。
 - **日志目录名固定为 `日志`**。插件按 `日志\build-index.mjs`、`日志\YYYY-MM-DD.md` 定位，改名（如 `logs`）会被判为「未启用」，需要重新初始化。
-- **已拒绝只停主动询问，不锁死**。拒绝后插件完全静默；反悔时 `worklog_init(enabled=true)` 照常初始化。
-- **`worklog_links` 会截断带空格的 Windows 路径**。`` `D:\Program Files\DSH\DSH.exe` `` 被解析成 `Files\DSH\DSH.exe` —— 反引号内的路径没有引号可配对，按空格取「最后一个带扩展名的片段」时会把前面的目录丢掉。**要精确引用，别让路径里带空格。**
-- **`worklog_links` 不校验引用是否还有效**。日志是历史快照，当时确实存在就够了。代价：文件改名或删除后，反查仍会列出那些引用，读的时候要自己留意。
+- **已拒绝只停主动询问，不锁死**。拒绝后插件完全静默；反悔时 `annals_init(enabled=true)` 照常初始化。
+- **`annals_links` 会截断带空格的 Windows 路径**。`` `D:\Program Files\DSH\DSH.exe` `` 被解析成 `Files\DSH\DSH.exe` —— 反引号内的路径没有引号可配对，按空格取「最后一个带扩展名的片段」时会把前面的目录丢掉。**要精确引用，别让路径里带空格。**
+- **`annals_links` 不校验引用是否还有效**。日志是历史快照，当时确实存在就够了。代价：文件改名或删除后，反查仍会列出那些引用，读的时候要自己留意。
 - **裸名不猜上限 8 条**。入链查一个全库重名的文件（如 `说明.md`）时，只在**没有正经命中**的情况下逐条列「指向不明」的疑似条目，最多 8 条；有正经命中时只报总数。
 
 ## 延伸阅读

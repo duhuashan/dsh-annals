@@ -5,7 +5,7 @@
 ## 目录结构
 
 ```
-dsh-worklog/
+dsh-annals/
 ├── lib/
 │   ├── index.js        2013 行 · 插件主体：注册、状态机、提醒引擎、路径判定
 │   ├── query.js         604 行 · 检索算法，纯函数、不碰 ctx、可单测
@@ -13,7 +13,7 @@ dsh-worklog/
 ├── client/
 │   └── client.js       设置面板的「日志系统」页（web 端 client 半）
 ├── assets/
-│   ├── worklog.md      329 行 · worklog 技能的正文，运行时注册进技能系统
+│   ├── annals.md      329 行 · annals 技能的正文，运行时注册进技能系统
 │   ├── build-index.mjs  索引生成器，初始化时**复制**进用户工作区
 │   ├── log-parse.mjs    生成器的解析模块，同样复制进工作区
 │   └── gitattributes    复制成 日志\.gitattributes
@@ -42,9 +42,9 @@ export const inject = ['skills', 'systemPrompt', 'tools', 'fs', 'shell', 'workin
 
 | 服务 / 钩子 | 用途 | 关键约束 |
 |---|---|---|
-| `ctx.skills.register()` | 注册 `worklog` 技能 | **必须带 `source`**，否则加载时抛 `loaded skill "worklog" source must be a string` |
+| `ctx.skills.register()` | 注册 `annals` 技能 | **必须带 `source`**，否则加载时抛 `loaded skill "annals" source must be a string` |
 | `ctx.systemPrompt.section()` | 注入常驻规矩，`order: 150` | 不依赖技能加载；每轮都在系统提示里 |
-| `ctx.tools.register()` | 注册 `worklog_init` / `worklog_query` / `worklog_links` | 描述文字是「装门」的一半 —— 模型只在读到它时才知道有这个工具 |
+| `ctx.tools.register()` | 注册 `annals_init` / `annals_query` / `annals_links` | 描述文字是「装门」的一半 —— 模型只在读到它时才知道有这个工具 |
 | `ctx.fs.*` | 读写文件、判存在 | 直调时**必须传沙箱策略**，否则退回 `workspace-write` + 进程 cwd |
 | `ctx.shell.resolve()/execute()` | 跑 `git init` | 同样必须传会话策略 |
 | `ctx.workingDirectory.get(session)` | 拿工作区根 | 拿不到时抛错，所有调用点都包了 try |
@@ -63,7 +63,7 @@ export const inject = ['skills', 'systemPrompt', 'tools', 'fs', 'shell', 'workin
 
 官方契约：turns 即将关闭时 `steer` 必定再跑一步。所以模型收到提醒后还有机会当场补写，不用等下一轮。
 
-代价是提醒**不出现在 GUI 对话流里** —— 它是注入给模型的 user 侧消息，不是对话气泡。想确认它发生过，看会话记录里 `source.kind === "worklog"` 的消息。
+代价是提醒**不出现在 GUI 对话流里** —— 它是注入给模型的 user 侧消息，不是对话气泡。想确认它发生过，看会话记录里 `source.kind === "annals"` 的消息。
 
 ---
 
@@ -156,7 +156,7 @@ if (byWorkspace !== undefined || official !== undefined || byPathsVote) {
 | 跳过的 | 为什么 |
 |---|---|
 | `.git` | `git status` / `git add` 本身会重写 `.git\index`，不跳会把自己扫成「改过」 |
-| `.dsh\log-system.json`、`.dsh\worklog-probe.jsonl` | **插件自己写的**。不跳就是自指误报：调一次 `worklog_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
+| `.dsh\log-system.json`、`.dsh\annals-probe.jsonl` | **插件自己写的**。不跳就是自指误报：调一次 `annals_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
 
 只跳过这两个文件，**不整个跳过 `.dsh\`** —— 用户或模型可能在 `.dsh\skills\` 里干正事。
 
@@ -298,21 +298,21 @@ if (titleHits.length >= TITLE_HIT_ENOUGH) {   // 3
 
 全在 `lib/links.js`。
 
-### `worklog_query` 与 `worklog_links` 的分工
+### `annals_query` 与 `annals_links` 的分工
 
 | | 按什么找 | 用在什么时候 |
 |---|---|---|
-| `worklog_query` | **内容** —— 忘了一件事在哪 | 做一件「感觉做过」的事之前 |
-| `worklog_links` | **关系** —— 知道是哪一条 | 改文件前想知道以前哪些条目碰过它 |
+| `annals_query` | **内容** —— 忘了一件事在哪 | 做一件「感觉做过」的事之前 |
+| `annals_links` | **关系** —— 知道是哪一条 | 改文件前想知道以前哪些条目碰过它 |
 
 两者不重叠，选错的代价是拿到一堆不相干的结果。
 
 ### `target` 的三种写法
 
 ```
-worklog_links({ target: "日志\2026-10-23.md" })              // 整个文件
-worklog_links({ target: "日志\2026-10-23.md 第 10 条" })      // 只这一条
-worklog_links({ target: "tools\check-refs.mjs" })            // 任意工作区文件，必须写全路径
+annals_links({ target: "日志\2026-10-23.md" })              // 整个文件
+annals_links({ target: "日志\2026-10-23.md 第 10 条" })      // 只这一条
+annals_links({ target: "tools\check-refs.mjs" })            // 任意工作区文件，必须写全路径
 ```
 
 裸日期（`2026-10-23.md`）自动补成 `日志\` 前缀 —— 这个形态在工作区里唯一，猜错概率为零。其他文件必须写全路径：全库有四个 `说明.md`，只报文件名等于让工具替你猜。
@@ -440,7 +440,7 @@ export function readFlag(config, field) {
 
 ### 插件页不渲染配置表单
 
-「插件」→ dsh-worklog 那张卡片只显示包信息与运行状态。这是 DSH 的既有行为：配置表单由功能包自己注册设置页。
+「插件」→ dsh-annals 那张卡片只显示包信息与运行状态。这是 DSH 的既有行为：配置表单由功能包自己注册设置页。
 
 ---
 
@@ -456,11 +456,11 @@ export function readFlag(config, field) {
 | `test/version.test.mjs` | **6** | 版本号一致性与打包清单（见下） |
 | `test/e2e-sandbox.test.mjs` | **1** | 包装 `e2e-sandbox.mjs`：真实磁盘初始化全流程 |
 
-`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 103 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\worklog-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
+`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 103 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\annals-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
 
 ### version.test.mjs：为什么需要它
 
-仓库没有 CI。`version` 这个数字同时存在于三处字面量里 —— `package.json:3`、`README.md:7` 的横幅、`README.md:45` 那条安装命令里的 `dsh-worklog-X.Y.Z.tgz`。升版本时漏改任何一处**都不会报错**：
+仓库没有 CI。`version` 这个数字同时存在于三处字面量里 —— `package.json:3`、`README.md:7` 的横幅、`README.md:45` 那条安装命令里的 `dsh-annals-X.Y.Z.tgz`。升版本时漏改任何一处**都不会报错**：
 
 - README 横幅留着旧版本号 → 读者以为自己在装旧版
 - 安装命令里的 tgz 名对不上 → 用户照着抄一个不存在的文件名
@@ -480,7 +480,7 @@ export function readFlag(config, field) {
 - **引导注入**：`undecided` 时注入、已启用时不注入
 - **提醒**：触发与跳过、「不用记」豁免话术（`SKIP_RE` 的 24 条正反样本）
 - **索引新鲜度提醒**：不存在 / 陈旧 / 已最新 / 开关关闭
-- **工具**：`worklog_init` 两个分支、`worklog_query` 检索入口
+- **工具**：`annals_init` 两个分支、`annals_query` 检索入口
 - **检索质量**：真机踩出来的回归
 - **shell 命令判定**：误报回归（`rm ` 子串、`2>&1`、here-string、临时目录豁免、上限截断）
 - **漏查探测**：只记，不打扰
@@ -506,4 +506,4 @@ export const BLANK_OK = new Set(['date→entry', 'entry→body', 'body→item', 
 
 `BLANK_OK` 那五个就是「空行只允许在这 5 处」的机器可读版本 —— **既查「只允许」也查「必须有」**，两件事都查。
 
-写作规矩本身在 `assets/worklog.md`（技能正文）里，运行时注册成 `worklog` 技能。
+写作规矩本身在 `assets/annals.md`（技能正文）里，运行时注册成 `annals` 技能。

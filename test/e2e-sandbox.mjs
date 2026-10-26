@@ -1,4 +1,4 @@
-// dsh-worklog 端到端沙箱模拟测试 —— 用真实磁盘复现「新工作区初始化」。
+// dsh-annals 端到端沙箱模拟测试 —— 用真实磁盘复现「新工作区初始化」。
 //
 // 背景：dsh-fs-sandbox 后端对 writeText 的默认策略是 workspace-write +
 // 进程 cwd；插件直调 ctx.fs 时若省略沙箱策略，在别的工作区写入会被拒。
@@ -10,7 +10,7 @@
 //   4. 初始化不在工作区创建 _文档架构.md 等其他文件。
 //
 // 运行：node test/e2e-sandbox.mjs
-// 目标目录默认 %TEMP%\worklog-e2e-<pid>，可用第一个参数指定。
+// 目标目录默认 %TEMP%\annals-e2e-<pid>，可用第一个参数指定。
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,7 +19,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 
 import { initWorkspace, localDate } from '../lib/index.js';
 
-const root = process.argv[2] ?? join(tmpdir(), `worklog-e2e-${process.pid}`);
+const root = process.argv[2] ?? join(tmpdir(), `annals-e2e-${process.pid}`);
 rmSync(root, { recursive: true, force: true });
 mkdirSync(root, { recursive: true });
 

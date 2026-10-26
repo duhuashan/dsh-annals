@@ -169,7 +169,7 @@ test('parseTicked：带空格的命令串取最后一个带扩展名的片段', 
 });
 
 test('parseTicked：扩展名白名单长后缀优先，`.jsonl` 不会被切成 `.json`', () => {
-  assert.equal(parseTicked('.dsh\\worklog-probe.jsonl').path, '.dsh\\worklog-probe.jsonl');
+  assert.equal(parseTicked('.dsh\\annals-probe.jsonl').path, '.dsh\\annals-probe.jsonl');
 });
 
 test('parseTicked：空串与非字符串', () => {

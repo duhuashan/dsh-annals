@@ -40,16 +40,16 @@ test('README 顶部横幅的版本号与 package.json 一致', () => {
 });
 
 test('README 安装命令里的 tgz 文件名与 package.json 一致', () => {
-  const found = [...readme.matchAll(/dsh-worklog-(\d+\.\d+\.\d+)\.tgz/g)].map((m) => m[1]);
+  const found = [...readme.matchAll(/dsh-annals-(\d+\.\d+\.\d+)\.tgz/g)].map((m) => m[1]);
   assert.ok(
     found.length > 0,
-    'README 里找不到 dsh-worklog-X.Y.Z.tgz —— 安装命令换了写法，测试要跟着改',
+    'README 里找不到 dsh-annals-X.Y.Z.tgz —— 安装命令换了写法，测试要跟着改',
   );
   for (const v of new Set(found)) {
     assert.equal(
       v,
       pkg.version,
-      `README 里出现 dsh-worklog-${v}.tgz，package.json 是 ${pkg.version}`,
+      `README 里出现 dsh-annals-${v}.tgz，package.json 是 ${pkg.version}`,
     );
   }
 });

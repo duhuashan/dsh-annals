@@ -141,14 +141,14 @@
 `ctx.skills.register()` 的 `validateRuntimeSkill` 不查 `source`，但 skill 工具加载时 `skills.get()` 会 `validateDefinition`，缺 `source` 抛：
 
 ```
-loaded skill "worklog" source must be a string
+loaded skill "annals" source must be a string
 ```
 
-已补 `source: 'dsh-worklog'`。
+已补 `source: 'dsh-annals'`。
 
 ### 15. GUI 开关页来自 client 半
 
-插件在 `package.json` 声明 `dsh.client.platform: "web"` 并导出 `./client`，宿主把它编进浏览器入口图（`/plugins` 路由，`window.__DSH_BOOT__` 里能看到 `dsh-worklog` 条目）。
+插件在 `package.json` 声明 `dsh.client.platform: "web"` 并导出 `./client`，宿主把它编进浏览器入口图（`/plugins` 路由，`window.__DSH_BOOT__` 里能看到 `dsh-annals` 条目）。
 
 **非 web profile 没有这一页**，只能改 `cordis.patch.yml`。
 
@@ -156,9 +156,9 @@ loaded skill "worklog" source must be a string
 
 ## 四、自指误报：插件自己的写入不算「工作区改过」
 
-`OWN_STATE_FILES = new Set([STATE_FILE, '.dsh/worklog-probe.jsonl'])` 被排除在整区快照之外。
+`OWN_STATE_FILES = new Set([STATE_FILE, '.dsh/annals-probe.jsonl'])` 被排除在整区快照之外。
 
-**不排除会怎样**（实测 2026-10-25 18:46）：调一次 `worklog_query` 会往 `.dsh\worklog-probe.jsonl` 追加一行，轮尾快照因此判「工作区改过」，于是当场催「你改过文件但还没写今天的日志」—— 而那一轮只做了一次只读检索，什么都没改。
+**不排除会怎样**（实测 2026-10-25 18:46）：调一次 `annals_query` 会往 `.dsh\annals-probe.jsonl` 追加一行，轮尾快照因此判「工作区改过」，于是当场催「你改过文件但还没写今天的日志」—— 而那一轮只做了一次只读检索，什么都没改。
 
 危害不只是多一条提醒：它把「用这个工具」和「被催写日志」绑在了一起 —— **查得越多，被催得越勤**。这正好打在本工具要治的病上（检索意愿本来就低）。
 
