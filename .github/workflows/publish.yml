@@ -104,17 +104,33 @@ jobs:
           }
           Write-Output "GitHub id_token 已获取，长度=$($idToken.Length)"
           # 第二步：拿 id_token 向 registry 换 npm token（npm 自己调的那个端点）
+          # 对照三个包，区分 404 的两种含义：
+          #   dsh-annals  —— 已建 trusted publisher，但只有 stub 版本
+          #   npm         —— 肯定存在但没配 trusted publisher（应报 unauthorized）
+          #   zzz-no-such —— 根本不存在（若与上面同样报 not found，说明 404 是
+          #                  「查无此包」，即 registry 不认 dsh-annals 存在）
+          foreach ($pkg in @('dsh-annals', 'npm', 'zzz-no-such-pkg-9f8a7b')) {
+            try {
+              $exResp = Invoke-WebRequest `
+                -Uri "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/$pkg" `
+                -Method POST -Headers @{ Authorization = "Bearer $idToken" } `
+                -UseBasicParsing -SkipHttpErrorCheck
+              $body = $exResp.Content
+              if ($body.Length -gt 400) { $body = $body.Substring(0, 400) }
+              Write-Output "[$pkg] 状态码=$($exResp.StatusCode) 响应=$body"
+            } catch {
+              Write-Output "[$pkg] 抛错: $($_.Exception.Message)"
+            }
+          }
+
+          # 第三步：确认 dsh-annals 在 registry 上有哪些版本、dist-tags 指向谁
           try {
-            $exResp = Invoke-WebRequest `
-              -Uri "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/dsh-annals" `
-              -Method POST -Headers @{ Authorization = "Bearer $idToken" } `
-              -UseBasicParsing -SkipHttpErrorCheck
-            Write-Output "exchange 状态码: $($exResp.StatusCode)"
-            $body = $exResp.Content
-            if ($body.Length -gt 800) { $body = $body.Substring(0, 800) }
-            Write-Output "exchange 响应: $body"
+            $meta = Invoke-RestMethod -Uri "https://registry.npmjs.org/dsh-annals" -TimeoutSec 20
+            $vers = ($meta.versions.PSObject.Properties.Name) -join ', '
+            $tags = $meta.'dist-tags' | ConvertTo-Json -Compress
+            Write-Output "registry 上的 dsh-annals: versions=[$vers] dist-tags=$tags"
           } catch {
-            Write-Output "exchange 抛错: $($_.Exception.Message)"
+            Write-Output "读 dsh-annals 元数据失败: $($_.Exception.Message)"
           }
 
       # npm publish 之前不跑 build：本仓库没有构建步骤，lib/ 与 client/
