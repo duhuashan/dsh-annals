@@ -1,0 +1,67 @@
+name: publish
+
+# 发布到 npm，走 Trusted Publishing (OIDC) —— 不需要任何长期 token。
+#
+# 为什么必须用 OIDC 而不是 `npm publish` 本地执行：
+# npm 的 2FA 只支持 WebAuthn 安全密钥，没有 6 位验证码；而 CLI 的交互式
+# 认证要求 stdin/stdout 是 TTY（npm/lib/utils/auth.js:10-12），在脚本里
+# 直接 throw。OIDC 把「证明我是我」这件事交给 GitHub 的 id-token，
+# registry 验签后放行，绕开这道坎。
+#
+# 为什么 runs-on 必须写 windows-latest 而不是 ubuntu-latest：
+# lib/index.js 里的 ABS_PATH_RE = /[A-Za-z]:\\[^\s"';|)]+/g 只认盘符路径，
+# test/offline.mjs 有一批断言用它抽 shell 命令里的绝对路径。在 Linux 上
+# 这些断言拿到的永远是空数组，会直接 fail。这不是「顺手选个平台」，
+# 是这个仓库的测试本身带着 Windows 假设。
+
+on:
+  # 手动触发：首次发布与排障用这个，不依赖打 tag。
+  workflow_dispatch:
+
+  # 打 tag 自动发：以后 version 升完、推 v* tag 就走这条路。
+  push:
+    tags: ['v*']
+
+jobs:
+  # 先跑测试。测试不过就不该占用版本号 —— npm 的版本一旦发布不可撤回
+  # （unpublish 会触发 24 小时封禁），发错了只能升版本补救。
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          # 仓库里只有 pnpm-lock.yaml，没有 package-lock.json。
+          # setup-node 自动开启的包管理器缓存找不到 npm 的 lockfile 会直接失败。
+          package-manager-cache: false
+
+      # 不用 `npm ci`：它强制要求 package-lock.json 存在，而本仓库用 pnpm。
+      - run: npm install --no-audit --no-fund
+
+      - run: npm test
+
+  publish:
+    needs: test
+    runs-on: windows-latest
+    # id-token 写在 job 级而不是顶层：只让真正发布的那一步拿到 OIDC 令牌，
+    # test job 不需要这个权限，给了反而是多余的暴露面。
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      # npm publish 之前不跑 build：本仓库没有构建步骤，lib/ 与 client/
+      # 就是源码，files 白名单直接打进去。测试已在 test job 里跑过。
+
+      # 显式带 --registry：runner 上虽然没有镜像源的干扰，但把目标写死
+      # 一眼能看出「发到哪」。provenance 由 OIDC 自动生成，无需额外参数。
+      - run: npm publish --registry https://registry.npmjs.org
