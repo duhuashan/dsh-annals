@@ -150,6 +150,26 @@ jobs:
             Write-Output "读 dsh-annals 元数据失败: $($_.Exception.Message)"
           }
 
+      # 幂等保护：版本已经在 registry 上就跳过发布。
+      # npm 的版本一旦发布不可撤回，重跑这个 workflow 只会得到一句
+      # 「Cannot publish over previously published version」，在 Actions 上
+      # 留一个红叉，而它什么都不代表 —— 包早就发出去了。
+      # 真实场景：补发 GitHub Release 时也要推同版本 tag，这条会拦住二次发布。
+      - name: 检查该版本是否已发布
+        id: published
+        shell: pwsh
+        run: |
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $r = Invoke-WebRequest -Uri "https://registry.npmjs.org/dsh-annals/$v" `
+            -Method Head -UseBasicParsing -SkipHttpErrorCheck
+          if ($r.StatusCode -eq 200) {
+            Write-Output "registry 上已有 dsh-annals@$v，跳过发布"
+            "skip=true" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Output "registry 上没有 dsh-annals@$v（状态码 $($r.StatusCode)），继续发布"
+            "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
       # npm publish 之前不跑 build：本仓库没有构建步骤，lib/ 与 client/
       # 就是源码，files 白名单直接打进去。测试已在 test job 里跑过。
 
@@ -158,3 +178,4 @@ jobs:
       # `--loglevel=verbose` 会把 oidc.js 里那几条 log.verbose 打出来，
       # 失败时能直接看到 token exchange 到底哪一步断的。
       - run: npm publish --registry https://registry.npmjs.org --loglevel=verbose
+        if: steps.published.outputs.skip != 'true'
