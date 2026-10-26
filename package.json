@@ -1,6 +1,6 @@
 {
   "name": "dsh-annals",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "type": "module",
   "description": "日志系统：注册 annals 技能、常驻注入日志规矩、轮次收尾提醒补写、一次初始化（日志目录 + 索引生成器 + git）。",
   "exports": {
