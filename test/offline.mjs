@@ -1707,8 +1707,11 @@ test('looksLikeShellWrite：真重定向仍然判改', () => {
   // 既是流编号、又是真重定向：合流之后另有一个 `>`
   assert.equal(looksLikeShellWrite('node build.mjs 2>&1 > log.txt'), true);
   assert.equal(looksLikeShellWrite('Get-Content x > out\\y.txt'), true);
-  // 目标是临时目录时不判改 —— 这是另一条规则（onlyTouchesTemp）在起作用
-  assert.equal(looksLikeShellWrite('Get-Content x > D:\\Temp\\y.txt'), false);
+  // 目标是临时目录时不判改 —— 这是另一条规则（onlyTouchesTemp）在起作用。
+  // 临时根必须用 os.tmpdir() 现算：写死 `D:\Temp` 只在 owner 那台机器上成立，
+  // GitHub Actions runner 的临时目录是 `C:\Users\...\AppData\Local\Temp`，
+  // 写死的路径在那里是个普通目录，这条断言会当场反转成 true。
+  assert.equal(looksLikeShellWrite(`Get-Content x > ${tmpdir()}\\y.txt`), false);
 });
 
 test('误报回归：带 2>&1 的只读轮次不再触发补写日志提醒', async (t) => {
@@ -1753,9 +1756,11 @@ test('stripHereString：here-string 正文被清空，外面的命令一字不�
 });
 
 test('looksLikeShellWrite：here-string 里的关键词是数据，不是命令', () => {
-  // turn 20 真机误报的原型：正文里全是关键词字面词，实际只往临时目录写脚本
+  // turn 20 真机误报的原型：正文里全是关键词字面词，实际只往临时目录写脚本。
+  // `cd` 的目标用 tmpdir() 现算 —— 写死 D:\Temp 只在 owner 机器上是临时目录，
+  // 在 CI runner 上不是，这条会从 false 反转成 true。
   const probe = [
-    'cd D:\\Temp',
+    `cd ${tmpdir()}`,
     "@'",
     "const cases = [['New-Item D:\\\\Temp\\\\probe', false]];",
     '// 上面这句是在测 Remove-Item、Set-Content',
@@ -1797,7 +1802,7 @@ test('误报回归：here-string 里满是指令词的只读轮次不再触发�
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
   const probe = [
-    'cd D:\\Temp',
+    `cd ${tmpdir()}`,
     "@'",
     "const cases = [['New-Item D:\\\\Temp\\\\probe', false], ['rm D:\\\\AI\\\\deepseek2\\\\a.txt', true]];",
     "'@ | Set-Content -Path v.mjs -Encoding utf8",
@@ -2089,8 +2094,9 @@ test('collectShellPaths：没有绝对路径就是空的（脚本类命令走不
 });
 
 test('collectShellPaths：临时目录、盘符根、重复项都不盯', () => {
-  // 临时目录里的写入本来就不算改工作区，盯它只是白 stat
-  assert.deepEqual(collectShellPaths('Remove-Item D:\\Temp\\x.txt'), []);
+  // 临时目录里的写入本来就不算改工作区，盯它只是白 stat。
+  // 用 tmpdir() 现算，不写死 —— 临时根随机器而变，写死的那台机器之外就失效。
+  assert.deepEqual(collectShellPaths(`Remove-Item ${tmpdir()}\\x.txt`), []);
   assert.deepEqual(collectShellPaths('New-Item $env:TEMP\\probe -ItemType Directory'), []);
   // 盘符根不是具体目标，盯它等于盯整块盘
   assert.deepEqual(collectShellPaths('dir C:\\'), []);
