@@ -56,12 +56,72 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-          registry-url: 'https://registry.npmjs.org'
+          # registry-url 会顺手往 .npmrc 写一行 `_authToken=${NODE_AUTH_TOKEN}`。
+          # 不设 NODE_AUTH_TOKEN 时它是个空壳，npm 会当成「有凭据」而跳过
+          # ENEEDAUTH 检查，带着空 token 去 PUT —— registry 回 404 而不是 401，
+          # 报错信息完全指错方向。所以这里不写 registry-url，改用下面的
+          # `--registry` 参数，让 npm 走纯 OIDC 路径。
           package-manager-cache: false
+
+      # 排查用：OIDC 的两个环境变量是否注入（只在 id-token: write 时才有）。
+      # 值不打印，只打印长度与 URL 的 host，避免泄露。
+      - name: 检查 OIDC 环境变量
+        shell: pwsh
+        run: |
+          $u = $env:ACTIONS_ID_TOKEN_REQUEST_URL
+          $t = $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          if ([string]::IsNullOrEmpty($u)) {
+            Write-Output "ACTIONS_ID_TOKEN_REQUEST_URL: 未设置"
+          } else {
+            Write-Output "ACTIONS_ID_TOKEN_REQUEST_URL: 已设置，host=$(([uri]$u).Host)"
+          }
+          if ([string]::IsNullOrEmpty($t)) {
+            Write-Output "ACTIONS_ID_TOKEN_REQUEST_TOKEN: 未设置"
+          } else {
+            Write-Output "ACTIONS_ID_TOKEN_REQUEST_TOKEN: 已设置，长度=$($t.Length)"
+          }
+
+      # 排查用：手动复刻 npm 的 OIDC token exchange，把 registry 的真实回应打出来。
+      # npm 的 oidc() 从不抛错（lib/utils/oidc.js 外层 catch 吞掉一切），失败时
+      # 只会静默退回匿名请求，报错指向别处（404 而不是「未配置 trusted publisher」）。
+      # 这里直接问 registry，就能知道到底是不是连接没建好。
+      - name: 手动验证 OIDC token exchange
+        shell: pwsh
+        run: |
+          $u = $env:ACTIONS_ID_TOKEN_REQUEST_URL
+          $t = $env:ACTIONS_ID_TOKEN_REQUEST_TOKEN
+          if ([string]::IsNullOrEmpty($u) -or [string]::IsNullOrEmpty($t)) {
+            Write-Output "跳过：OIDC 环境变量缺失"
+            exit 0
+          }
+          # 第一步：向 GitHub 换 id_token
+          $idResp = Invoke-RestMethod -Uri "$u&audience=npm:registry.npmjs.org" `
+            -Headers @{ Authorization = "Bearer $t"; Accept = 'application/json' }
+          $idToken = $idResp.value
+          if ([string]::IsNullOrEmpty($idToken)) {
+            Write-Output "GitHub 未返回 id_token"
+            exit 0
+          }
+          Write-Output "GitHub id_token 已获取，长度=$($idToken.Length)"
+          # 第二步：拿 id_token 向 registry 换 npm token（npm 自己调的那个端点）
+          try {
+            $exResp = Invoke-WebRequest `
+              -Uri "https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/dsh-annals" `
+              -Method POST -Headers @{ Authorization = "Bearer $idToken" } `
+              -UseBasicParsing -SkipHttpErrorCheck
+            Write-Output "exchange 状态码: $($exResp.StatusCode)"
+            $body = $exResp.Content
+            if ($body.Length -gt 800) { $body = $body.Substring(0, 800) }
+            Write-Output "exchange 响应: $body"
+          } catch {
+            Write-Output "exchange 抛错: $($_.Exception.Message)"
+          }
 
       # npm publish 之前不跑 build：本仓库没有构建步骤，lib/ 与 client/
       # 就是源码，files 白名单直接打进去。测试已在 test job 里跑过。
 
       # 显式带 --registry：runner 上虽然没有镜像源的干扰，但把目标写死
       # 一眼能看出「发到哪」。provenance 由 OIDC 自动生成，无需额外参数。
-      - run: npm publish --registry https://registry.npmjs.org
+      # `--loglevel=verbose` 会把 oidc.js 里那几条 log.verbose 打出来，
+      # 失败时能直接看到 token exchange 到底哪一步断的。
+      - run: npm publish --registry https://registry.npmjs.org --loglevel=verbose
