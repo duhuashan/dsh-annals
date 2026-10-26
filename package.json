@@ -18,6 +18,9 @@
     "LIMITATIONS.md",
     "LICENSE"
   ],
+  "scripts": {
+    "test": "node --test test/offline.mjs test/build-index.test.mjs test/links.test.mjs test/version.test.mjs test/e2e-sandbox.test.mjs"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/duhuashan/dsh-worklog.git"

@@ -21,7 +21,9 @@ dsh-worklog/
 │   ├── offline.mjs      2316 行 · 103 个离线用例（另有 2 个 skip）
 │   ├── build-index.test.mjs  927 行 · 77 个生成器端到端用例
 │   ├── links.test.mjs        855 行 · 75 个双向链接用例
-│   └── e2e-sandbox.mjs       204 行 · 真实磁盘端到端脚本
+│   ├── version.test.mjs       82 行 · 6 个版本号与打包清单一致性用例
+│   ├── e2e-sandbox.mjs       204 行 · 真实磁盘端到端脚本（自己 console.log、自己设退出码）
+│   └── e2e-sandbox.test.mjs   39 行 · 上者的 node:test 包装器（断言退出码 + 清理临时目录）
 ├── cordis.patch.yml    让插件进入 DSH 配置树的 patch
 └── package.json
 ```
@@ -444,14 +446,30 @@ export function readFlag(config, field) {
 
 ## 测试策略
 
-四套测试，全部离线，不需要 DSH 宿主。
+五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **264 项**（262 pass / 2 skip）。
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
 | `test/offline.mjs` | **103**（另 2 个 skip） | 见下 |
 | `test/build-index.test.mjs` | **77** | 生成器端到端（真实临时目录 + 真实子进程） |
 | `test/links.test.mjs` | **75** | 双向链接（纯函数 + 临时工作区夹具） |
-| `test/e2e-sandbox.mjs` | 脚本 | 真实磁盘：模拟 fs-sandbox 拒绝默认策略、验证初始化全部写入成功、再跑生成器 |
+| `test/version.test.mjs` | **6** | 版本号一致性与打包清单（见下） |
+| `test/e2e-sandbox.test.mjs` | **1** | 包装 `e2e-sandbox.mjs`：真实磁盘初始化全流程 |
+
+`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 103 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\worklog-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
+
+### version.test.mjs：为什么需要它
+
+仓库没有 CI。`version` 这个数字同时存在于三处字面量里 —— `package.json:3`、`README.md:7` 的横幅、`README.md:45` 那条安装命令里的 `dsh-worklog-X.Y.Z.tgz`。升版本时漏改任何一处**都不会报错**：
+
+- README 横幅留着旧版本号 → 读者以为自己在装旧版
+- 安装命令里的 tgz 名对不上 → 用户照着抄一个不存在的文件名
+
+同理 `files` 白名单：列了不存在的文件，打包静默缺内容；漏列新文档，从 tgz 安装的人点 README 里的链接会 404。这两类都属于「沉默地错」，最该用测试钉住。
+
+六条断言：版本形状合法 / README 横幅与 `package.json` 一致 / 安装命令里的 tgz 名一致 / `files` 每一项真实存在 / `files` 覆盖三个对外文档 / 白名单里的 `.md` 不是空文件。
+
+这三条版本相关断言都做过反向验证：分别把 README 横幅改回 `0.4.0`、把 tgz 名改回 `0.4.0`、从 `files` 里删掉 `ARCHITECTURE.md`，每次都**精确命中对应的那一条**并给出说明性报错，而不是笼统失败。永远通过的测试等于没写。
 
 `offline.mjs` 的分节（对应文件中带横线的小标题）：
 

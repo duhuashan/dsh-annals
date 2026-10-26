@@ -186,13 +186,22 @@ dsh plugin --profile web remove dsh-worklog
 ## 测试
 
 ```powershell
-node --test test/offline.mjs            # 103 个离线用例（另 2 个 skip 标记的已知缺陷）
-node --test test/build-index.test.mjs   # 77 个生成器端到端用例
-node --test test/links.test.mjs         # 75 个双向链接用例
-node test/e2e-sandbox.mjs "D:\某个空目录"   # 真实磁盘端到端
+pnpm test    # 一条命令跑完全部 264 个用例
 ```
 
-全部离线运行，不需要 DSH 宿主。各套覆盖了什么，见 [ARCHITECTURE.md](ARCHITECTURE.md#测试策略)。
+全部离线运行，不需要 DSH 宿主。五套各测什么、各自的覆盖与已知跳过项，见 [ARCHITECTURE.md](ARCHITECTURE.md#测试策略)。
+
+仓库里**没有 commit lock 文件**，所以刚 clone 下来还没有 `node_modules`。`pnpm test` 会先自动装依赖再跑（pnpm 11 默认行为），一行命令即可；`npm test` 不会自动装，得先 `npm install`。
+
+单独跑某一套：
+
+```powershell
+node --test test/offline.mjs            # 插件本体
+node --test test/build-index.test.mjs   # 索引生成器
+node --test test/links.test.mjs         # 双向链接
+node --test test/version.test.mjs       # 版本号与打包清单一致性
+node --test test/e2e-sandbox.test.mjs   # 真实磁盘端到端
+```
 
 ## 已知边界
 
