@@ -103,7 +103,24 @@ jobs:
             exit 0
           }
           Write-Output "GitHub id_token 已获取，长度=$($idToken.Length)"
-          # 第二步：拿 id_token 向 registry 换 npm token（npm 自己调的那个端点）
+          # 第二步：解出 id_token 的 payload（不打印 token 本身，payload 是明文
+          # 的 claim 段，不含签名，泄露无害）。npm 侧建连接时记录的就是这些
+          # claim，逐字段比对就能看出连接为什么匹配不上。
+          $parts = $idToken.Split('.')
+          if ($parts.Length -ge 2) {
+            $b64 = $parts[1].Replace('-', '+').Replace('_', '/')
+            switch ($b64.Length % 4) { 2 { $b64 += '==' } 3 { $b64 += '=' } }
+            $claims = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64)) | ConvertFrom-Json
+            foreach ($k in @('aud','sub','repository','repository_owner','repository_visibility',
+                             'workflow','workflow_ref','job_workflow_ref','ref','environment',
+                             'event_name','runner_environment')) {
+              $val = $claims.$k
+              if ($null -eq $val) { $val = '(无此字段)' }
+              Write-Output "  claim $k = $val"
+            }
+          }
+
+          # 第三步：对照三个包，区分 404 的两种含义
           # 对照三个包，区分 404 的两种含义：
           #   dsh-annals  —— 已建 trusted publisher，但只有 stub 版本
           #   npm         —— 肯定存在但没配 trusted publisher（应报 unauthorized）
@@ -123,7 +140,7 @@ jobs:
             }
           }
 
-          # 第三步：确认 dsh-annals 在 registry 上有哪些版本、dist-tags 指向谁
+          # 第四步：确认 dsh-annals 在 registry 上有哪些版本、dist-tags 指向谁
           try {
             $meta = Invoke-RestMethod -Uri "https://registry.npmjs.org/dsh-annals" -TimeoutSec 20
             $vers = ($meta.versions.PSObject.Properties.Name) -join ', '
