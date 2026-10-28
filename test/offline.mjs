@@ -32,6 +32,16 @@ import {
   isInsideWorkspace,
   snapshotWorkspaceStamp,
   workspaceChangedSince,
+  workspaceChangedPaths,
+  classifyUnattributed,
+  updateUnattributedDirs,
+  scanTopLevelDirs,
+  parseRequestedDirs,
+  isDismissed,
+  normalizeIgnoreDir,
+  isIgnoredPath,
+  readWorkspaceConfig,
+  writeWorkspaceConfig,
   collectShellPaths,
   snapshotPathStamps,
   pathStampsChangedSince,
@@ -373,7 +383,7 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.match(ctx.registered.sections[0].text, /简单记/, '注入段缺「用户说简单记→A」这半句');
   assert.match(ctx.registered.sections[0].text, /详细记/, '注入段缺「用户说详细记→C」这半句');
 
-  assert.equal(ctx.registered.tools.length, 3);
+  assert.equal(ctx.registered.tools.length, 4);
   const tool = ctx.registered.tools.find((x) => x.name === 'annals_init');
   assert.equal(tool.name, 'annals_init');
   assert.equal(tool.parameters.type, 'object');
@@ -397,7 +407,14 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.deepEqual(links.parameters.properties.direction.enum, ['both', 'in', 'out']);
   assert.equal(links.output.schema.type, 'string');
   assert.equal(typeof links.output.render, 'function');
-  assert.deepEqual(links.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
+  const ignore = ctx.registered.tools.find((x) => x.name === 'annals_ignore');
+  assert.ok(ignore, '没有注册 annals_ignore —— 忽略目录是这一步的全部目的');
+  assert.equal(ignore.parameters.type, 'object');
+  assert.deepEqual(ignore.parameters.required, ['action']);
+  assert.deepEqual(ignore.parameters.properties.action.enum, ['scan', 'list', 'add', 'remove', 'dismiss']);
+  assert.equal(ignore.output.schema.type, 'string');
+  assert.equal(typeof ignore.output.render, 'function');
+  assert.deepEqual(ignore.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
 });
 
 test('apply 配置开关能关掉每一项', (t) => {
@@ -407,7 +424,7 @@ test('apply 配置开关能关掉每一项', (t) => {
   apply(ctx, { skill: false, section: false, initTool: false, queryTool: false, linksTool: false, reminder: false });
   assert.equal(ctx.registered.skills.length, 0);
   assert.equal(ctx.registered.sections.length, 0);
-  assert.equal(ctx.registered.tools.length, 0);
+  assert.deepEqual(ctx.registered.tools.map((t) => t.name), ['annals_ignore'], '忽略目录工具是常开的基础功能');
 });
 
 test('apply 总开关 enabled=false 时技能、规矩、工具都不注册', (t) => {
@@ -2396,4 +2413,199 @@ test('环境变更（装插件）但没写日志 → 单独催一次，文案指
 
   assert.equal(agent.steers.length, 1);
   assert.match(agent.steers[0].content[0].text, /运行环境/);
+});
+
+// ---------------------------------------------------------------------------
+// 第 5 节：工作区忽略清单（ignoreDirs / annals_ignore）
+// ---------------------------------------------------------------------------
+
+test('忽略清单：目录名规范化只接受工作区内相对路径', () => {
+  assert.equal(normalizeIgnoreDir('.dsh-meow'), '.dsh-meow');
+  assert.equal(normalizeIgnoreDir(' a\\b '), 'a/b');
+  assert.equal(normalizeIgnoreDir('./foo/'), 'foo');
+  for (const bad of ['', '.', '..', '/abs', 'C:\\x', '../x', 'a/../b', '日志', '日志/2026']) {
+    assert.equal(normalizeIgnoreDir(bad), undefined, `${JSON.stringify(bad)} 应拒绝`);
+  }
+  assert.equal(isIgnoredPath('a/b.txt', ['a']), true);
+  assert.equal(isIgnoredPath('ab/x', ['a']), false);
+  assert.equal(isIgnoredPath('a', ['a/b']), false);
+});
+
+test('快照：ignoreDirs 整棵跳过，插件自己的状态文件始终跳过', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, '.dsh-meow'), { recursive: true });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  mkdirSync(join(root, '.dsh'), { recursive: true });
+  mkdirSync(join(root, '日志'), { recursive: true });
+  writeFileSync(join(root, '.dsh-meow', 'mem.md'), 'x', 'utf8');
+  writeFileSync(join(root, 'src', 'a.js'), 'x', 'utf8');
+  writeFileSync(join(root, '.dsh', 'log-system.json'), '{}', 'utf8');
+  writeFileSync(join(root, '.dsh', 'annals.json'), '{}', 'utf8');
+  writeFileSync(join(root, '日志', 'annals-probe.jsonl'), '{}', 'utf8');
+
+  const all = snapshotWorkspaceStamp(root, []);
+  assert.ok([...all.keys()].some((p) => p.endsWith('mem.md')), '不传忽略清单时应看到 .dsh-meow');
+  for (const own of ['log-system.json', 'annals.json', 'annals-probe.jsonl']) {
+    assert.ok(![...all.keys()].some((p) => p.endsWith(own)), own + ' 是插件自己的状态文件，应跳过');
+  }
+
+  const ignored = snapshotWorkspaceStamp(root, ['.dsh-meow']);
+  assert.ok(![...ignored.keys()].some((p) => p.includes('.dsh-meow')), '忽略目录整棵子树应跳过');
+
+  writeFileSync(
+    join(root, '.dsh', 'annals.json'),
+    JSON.stringify({ version: 1, ignoreDirs: ['.dsh-meow'] }),
+    'utf8',
+  );
+  const byConfig = snapshotWorkspaceStamp(root);
+  assert.ok(![...byConfig.keys()].some((p) => p.includes('.dsh-meow')), '省略参数时应读工作区配置');
+});
+
+test('workspaceChangedPaths / classifyUnattributed：变化路径归属', () => {
+  const cwd = 'C:\\ws';
+  const before = new Map([
+    [`${cwd}\\a.txt`, '1:1'],
+    [`${cwd}\\gone.txt`, '1:1'],
+    [`${cwd}\\.dsh-meow\\m.md`, '1:1'],
+  ]);
+  const after = new Map([
+    [`${cwd}\\a.txt`, '2:1'],
+    [`${cwd}\\new.txt`, '1:1'],
+    [`${cwd}\\.dsh-meow\\m.md`, '2:1'],
+  ]);
+  const changed = workspaceChangedPaths(before, after);
+  assert.deepEqual(
+    changed.sort(),
+    [`${cwd}\\a.txt`, `${cwd}\\gone.txt`, `${cwd}\\new.txt`, `${cwd}\\.dsh-meow\\m.md`].sort(),
+  );
+  const filtered = workspaceChangedPaths(before, after, { cwd, ignoreDirs: ['.dsh-meow'] });
+  assert.ok(!filtered.some((p) => p.includes('.dsh-meow')), '忽略目录两侧都应滤掉');
+
+  const root = makeRoot();
+  try {
+    const paths = [
+      join(root, '.dsh-meow', 'm.md'),
+      join(root, 'src', 'a.js'),
+      join(root, '日志', 'x.md'),
+      join(root, 'readme.md'),
+    ];
+    assert.deepEqual([...classifyUnattributed(paths, root, {})], [['.dsh-meow', 1], ['src', 1]]);
+    const attributed = classifyUnattributed(paths, root, {
+      writtenPaths: new Set([join(root, 'src', 'a.js')]),
+      pathStamps: new Map([[join(root, '.dsh-meow', 'm.md'), 'x']]),
+    });
+    assert.equal(attributed.size, 0, '本轮写过的路径与命令点名的路径都应排除');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('updateUnattributedDirs：连续两轮才出候选，dismiss 期内不提示', () => {
+  const root = makeRoot();
+  try {
+    const state = { unattributed: new Map(), writtenPaths: new Set(), pathStamps: new Map() };
+    const config = { version: 1, ignoreDirs: [], dismissed: {} };
+    const path = join(root, '.dsh-meow', 'm.md');
+
+    assert.equal(updateUnattributedDirs(state, root, [path], [], 1, config), undefined);
+    assert.equal(state.unattributed.get('.dsh-meow').count, 1);
+    assert.deepEqual(updateUnattributedDirs(state, root, [path], [], 2, config), {
+      dir: '.dsh-meow', turns: 2, files: 1,
+    });
+
+    // 已提示过 → 不再返回
+    state.unattributed.get('.dsh-meow').prompted = true;
+    assert.equal(updateUnattributedDirs(state, root, [path], [], 3, config), undefined);
+
+    // 中间断一轮 → 重新从 1 数
+    const state2 = { unattributed: new Map(), writtenPaths: new Set(), pathStamps: new Map() };
+    updateUnattributedDirs(state2, root, [path], [], 1, config);
+    updateUnattributedDirs(state2, root, [], [], 2, config);
+    assert.equal(state2.unattributed.size, 0);
+    assert.equal(updateUnattributedDirs(state2, root, [path], [], 3, config), undefined);
+    assert.equal(state2.unattributed.get('.dsh-meow').count, 1);
+
+    // dismiss 7 天内不参与
+    const state3 = { unattributed: new Map(), writtenPaths: new Set(), pathStamps: new Map() };
+    const dismissed = { version: 1, ignoreDirs: [], dismissed: { '.dsh-meow': new Date().toISOString() } };
+    assert.equal(updateUnattributedDirs(state3, root, [path], [], 1, dismissed), undefined);
+    assert.equal(state3.unattributed.size, 0);
+
+    // 7 天后重新参与
+    const expired = { version: 1, ignoreDirs: [], dismissed: { '.dsh-meow': new Date(Date.now() - 8 * 86400000).toISOString() } };
+    assert.equal(updateUnattributedDirs(state3, root, [path], [], 1, expired), undefined);
+    assert.deepEqual(updateUnattributedDirs(state3, root, [path], [], 2, expired), {
+      dir: '.dsh-meow', turns: 2, files: 1,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('annals_ignore：add 写清单并警告源码文件，list/remove/dismiss/scan 可用', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const tool = ctx.registered.tools.find((item) => item.name === 'annals_ignore');
+  assert.ok(tool, '应注册 annals_ignore');
+
+  mkdirSync(join(root, '.dsh-meow'), { recursive: true });
+  writeFileSync(join(root, '.dsh-meow', 'mem.md'), 'x', 'utf8');
+
+  const session = { header: { origin: 'primary' } };
+  const exec = { agent: { session } };
+
+  assert.match(await tool.execute({ action: 'list' }, exec), /（空）/);
+  const scan = await tool.execute({ action: 'scan' }, exec);
+  assert.match(scan, /\.dsh-meow/);
+  assert.match(scan, /不可忽略（日志目录）/);
+
+  const added = await tool.execute({ action: 'add', dirs: ['.dsh-meow'] }, exec);
+  assert.match(added, /已加入忽略清单/);
+  assert.match(added, /源码\/文档文件/);
+  const parsed = JSON.parse(readFileSync(join(root, '.dsh', 'annals.json'), 'utf8'));
+  assert.deepEqual(parsed.ignoreDirs, ['.dsh-meow']);
+
+  assert.match(await tool.execute({ action: 'list' }, exec), /- \.dsh-meow/);
+  assert.match(await tool.execute({ action: 'dismiss', dirs: ['.dsh-meow'] }, exec), /已暂缓提示/);
+  assert.match(await tool.execute({ action: 'remove', dirs: ['.dsh-meow'] }, exec), /已从忽略清单移除/);
+});
+
+test('annals_init 报告里带一句「忽略目录」的提示', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  const { report } = await initWorkspace(ctx, root);
+  assert.match(report, /忽略那个目录/);
+});
+
+test('自动发现：同一目录连续两轮无归因变化 → 点名提示忽略', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  mkdirSync(join(root, '.dsh-meow'), { recursive: true });
+  writeFileSync(join(root, '.dsh-meow', 'mem.md'), 'v1', 'utf8');
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  writeFileSync(join(root, '.dsh-meow', 'mem.md'), 'v2-changed', 'utf8');
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /还没有写今天的日志/);
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 2 } });
+  writeFileSync(join(root, '.dsh-meow', 'mem.md'), 'v3-even-longer', 'utf8');
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 2 });
+  assert.equal(agent.steers.length, 2);
+  assert.match(agent.steers[1].content[0].text, /连续 2 轮在变/);
+  assert.match(agent.steers[1].content[0].text, /忽略 \.dsh-meow/);
 });

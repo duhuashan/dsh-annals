@@ -44,7 +44,7 @@ export const inject = ['skills', 'systemPrompt', 'tools', 'fs', 'shell', 'workin
 |---|---|---|
 | `ctx.skills.register()` | 注册 `annals` 技能 | **必须带 `source`**，否则加载时抛 `loaded skill "annals" source must be a string` |
 | `ctx.systemPrompt.section()` | 注入常驻规矩，`order: 150` | 不依赖技能加载；每轮都在系统提示里 |
-| `ctx.tools.register()` | 注册 `annals_init` / `annals_query` / `annals_links` | 描述文字是「装门」的一半 —— 模型只在读到它时才知道有这个工具 |
+| `ctx.tools.register()` | 注册 `annals_init` / `annals_query` / `annals_links` / `annals_ignore` | 描述文字是「装门」的一半 —— 模型只在读到它时才知道有这个工具 |
 | `ctx.fs.*` | 读写文件、判存在 | 直调时**必须传沙箱策略**，否则退回 `workspace-write` + 进程 cwd |
 | `ctx.shell.resolve()/execute()` | 跑 `git init` | 同样必须传会话策略 |
 | `ctx.workingDirectory.get(session)` | 拿工作区根 | 拿不到时抛错，所有调用点都包了 try |
@@ -157,7 +157,7 @@ if (byWorkspace !== undefined || official !== undefined || byPathsVote) {
 | 跳过的 | 为什么 |
 |---|---|
 | `.git` | `git status` / `git add` 本身会重写 `.git\index`，不跳会把自己扫成「改过」 |
-| `.dsh\log-system.json`、`日志\annals-probe.jsonl` | **插件自己写的**。不跳就是自指误报：调一次 `annals_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
+| `.dsh\log-system.json`、`日志\annals-probe.jsonl`、`.dsh\annals.json` | **插件自己写的**。不跳就是自指误报：调一次 `annals_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
 
 只跳过这两个文件，**不整个跳过 `.dsh\`，也不整个跳过 `日志\`** —— 用户或模型可能在 `.dsh\skills\` 或 `日志\` 里干正事，那些改动该照常算数。
 
@@ -407,9 +407,35 @@ await writeStateFile(ctx, cwd, 'enabled', policy);
 
 ---
 
+## 工作区忽略清单
+
+### 存储
+
+`<工作区>\.dsh\annals.json`，每个工作区一份：
+
+```json
+{ "version": 1, "ignoreDirs": [".dsh-meow"], "dismissed": { ".dsh-meow": "2026-10-28T12:00:00.000Z" } }
+```
+
+`dismissed` 是用户说「不要」后的时间戳，7 天内同目录不再提示。配置损坏时按空清单处理，不阻断。
+
+### 快照过滤
+
+`snapshotWorkspaceStamp(cwd, ignoreDirs)` 在 walk 的每个 entry 上用 `isUnderIgnored` 整棵跳过。`OWN_STATE_FILES` 另把 `.dsh/annals.json` 排除 —— 插件自己写配置不能算工作区改动。
+
+### 自动发现
+
+轮尾 `workspaceChangedPaths` 返回具体变化路径，`classifyUnattributed` 去掉本轮 `writtenPaths`、`pathStamps`、官方清单、`日志\` 自身和根目录文件，剩下的按一级目录聚合。`updateUnattributedDirs` 对同一目录连续 2 轮无归因变化才返回候选；多个候选取连续轮次最多、变化文件数最多者。候选提示后 `prompted = true`，不重复提示。
+
+### `annals_ignore`
+
+五个 action：`scan`（一级目录 + 文件数 + 是否像源码 + 是否已忽略）、`list`、`add`、`remove`、`dismiss`。`add` 校验工作区内相对路径、拒绝 `..` / 盘符根 / `日志` 根；目录内有 `.js` / `.ts` / `.py` / `.md` 等源码或文档时警告但允许保存。
+
+---
+
 ## 配置系统
 
-### 九个字段与 `.volatile()`
+### 十个字段与 `.volatile()`
 
 ```js
 export const Config = z.object({
@@ -455,17 +481,17 @@ export function readFlag(config, field, fallback = true) {
 
 ## 测试策略
 
-五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **264 项**（262 pass / 2 skip）。
+五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **275 项**（273 pass / 2 skip）。
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
-| `test/offline.mjs` | **103**（另 2 个 skip） | 见下 |
+| `test/offline.mjs` | **116**（另 2 个 skip） | 见下 |
 | `test/build-index.test.mjs` | **77** | 生成器端到端（真实临时目录 + 真实子进程） |
 | `test/links.test.mjs` | **75** | 双向链接（纯函数 + 临时工作区夹具） |
 | `test/version.test.mjs` | **6** | 版本号一致性与打包清单（见下） |
 | `test/e2e-sandbox.test.mjs` | **1** | 包装 `e2e-sandbox.mjs`：真实磁盘初始化全流程 |
 
-`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 103 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\annals-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
+`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 116 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\annals-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
 
 ### version.test.mjs：为什么需要它
 
@@ -494,6 +520,7 @@ export function readFlag(config, field, fallback = true) {
 - **shell 命令判定**：误报回归（`rm ` 子串、`2>&1`、here-string、临时目录豁免、上限截断）
 - **漏查探测**：只记，不打扰
 - **自指误报**：插件自己写的状态文件不能算「工作区改过」
+- **工作区忽略清单**：目录名规范化、快照整棵跳过、变化归属、连续两轮候选、`annals_ignore` 五个 action、初始化报告提示、轮尾自动发现
 
 `build-index.test.mjs` 覆盖：代码围栏屏蔽（含未闭合）、编号写法不规范（全角数字/顿号/缺空格）的 FAIL、编号重复/倒序/跳号的文案、BOM 剥离、日期不存在、非 UTF-8 WARN、同名目录与只读文件的友好报错、概览加粗变体、行尾 `\r\r\n` 收敛、幂等，以及 A/B 两种脚本位置。
 

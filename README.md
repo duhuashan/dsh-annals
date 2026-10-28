@@ -4,7 +4,7 @@
 
 给 AI 一份跨会话的记忆：每天一个日志文件、一份可检索的索引、一个独立的 git 仓库。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.5.3 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.6.0 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
 
 ## 为什么装它
 
@@ -42,7 +42,7 @@ AI 的每次会话都开在一张白纸上。上一轮敲定的方案、踩过�
 从 [Releases](https://github.com/duhuashan/dsh-annals/releases) 下载最新的 `dsh-annals-<版本>.tgz`，然后：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-annals-0.5.3.tgz
+dsh plugin --profile web add C:\path\to\dsh-annals-0.6.0.tgz
 ```
 
 装完**重启 DSH** 生效。
@@ -138,8 +138,21 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 | `annals_init` | 一次初始化整个日志系统 | 首次启用；或反悔后重新启用 |
 | `annals_query` | **按内容找**：忘了一件事在哪，用关键词捞 | 动手做一件「感觉做过」的事之前 |
 | `annals_links` | **按关系找**：知道是哪一条，看它引了谁、谁引了它 | 改文件前想知道以前哪些条目碰过它 |
+| `annals_ignore` | 把「别的插件在自动写」的目录加进工作区忽略清单 | 某个目录总被误报成「你改过工作区」时 |
 
 `annals_query` 与 `annals_links` 不重叠：前者用在「我记得做过但忘了在哪」，后者用在「我知道是哪条，想看它牵到谁」。
+
+### 忽略某个目录
+
+有些目录是别的插件在自动写（比如 `.dsh-meow` 记忆库），不是这一轮的活。把目录加入工作区的忽略清单后，它下面的所有改动不再算「工作区改过」，轮尾不会再为它催日志。
+
+直接跟 AI 说「忽略 .dsh-meow」即可，它会调用 `annals_ignore` 写进 `.dsh\annals.json`。也可以手动调：
+
+- `annals_ignore({ action: "scan" })` —— 列一级目录，看哪个像插件自动写的
+- `annals_ignore({ action: "add", dirs: [".dsh-meow"] })` —— 加入清单（目录里有源码/文档会先警告，但允许保存）
+- `annals_ignore({ action: "list" })` / `{ action: "remove", dirs: [...] }` / `{ action: "dismiss", dirs: [...] }`
+
+清单**每个工作区一份**，存在 `.dsh\annals.json`，不随插件升级丢失。`dismiss` 用于「用户说了不要」：该目录 7 天内不再提示。忽略只影响「改没改」的判定，**不阻止**任何插件继续写那个目录。
 
 **都没有自动触发**。插件不会在每轮替你检索再塞进上下文 —— 那会把 prompt 缓存命中率打到 0%，而且意图分类判错等于静默不检索。只有两处被动入口：常驻系统提示里的一句规矩、`annals` 技能的触发词。是否调用由模型自己决定。
 
@@ -189,7 +202,7 @@ dsh plugin --profile web remove dsh-annals
 ## 测试
 
 ```powershell
-pnpm test    # 一条命令跑完全部 264 个用例
+pnpm test    # 一条命令跑完全部 275 个用例
 ```
 
 全部离线运行，不需要 DSH 宿主。五套各测什么、各自的覆盖与已知跳过项，见 [ARCHITECTURE.md](ARCHITECTURE.md#测试策略)。
