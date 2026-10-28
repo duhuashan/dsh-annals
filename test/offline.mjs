@@ -23,6 +23,7 @@ import {
   readFlag,
   isIndexStale,
   looksLikeShellWrite,
+  isEnvMutation,
   onlyTouchesTemp,
   stripQuoted,
   stripHereString,
@@ -1091,7 +1092,8 @@ test('检索：全库都没有的词返回 0 条，不硬凑', async () => {
   assert.equal(r.hits.length, 0, '只靠一个通用 bigram 蹭上的命中应当被 ABS_FLOOR 挡掉');
 });
 
-test('annals_query：每次调用都写一条埋点', async (t) => {  const root = makeRoot();
+test('annals_query：probe 默认关闭时不写埋点', async (t) => {
+  const root = makeRoot();
   t.after(() => rmSync(root, { recursive: true, force: true }));
   makeLogDir(root, {
     '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
@@ -1102,9 +1104,25 @@ test('annals_query：每次调用都写一条埋点', async (t) => {  const root
   const agent = makeAgent({ header: {} });
 
   await tool.execute({ query: '时间戳' }, { agent });
+
+  assert.equal(existsSync(join(root, '日志', 'annals-probe.jsonl')), false,
+    'probe 默认关闭，不该产生埋点文件');
+});
+
+test('annals_query：每次调用都写一条埋点', async (t) => {  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  makeLogDir(root, {
+    '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
+  });
+  const ctx = makeCtx(root);
+  apply(ctx, { probe: true });
+  const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
+  const agent = makeAgent({ header: {} });
+
+  await tool.execute({ query: '时间戳' }, { agent });
   await tool.execute({ query: '看板' }, { agent });
 
-  const probe = join(root, '.dsh', 'annals-probe.jsonl');
+  const probe = join(root, '日志', 'annals-probe.jsonl');
   assert.ok(existsSync(probe), '没有写埋点 —— 两周后就无从判断这扇门有没有人推');
   const lines = readFileSync(probe, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(lines.length, 2);
@@ -1163,7 +1181,7 @@ test('annals_query：写对照埋点，记模型词与原话各查到什么', as
     ].join('\n'),
   });
   const ctx = makeCtx(root);
-  apply(ctx, {});
+  apply(ctx, { probe: true });
   const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const session = { header: {} };
   const agent = makeAgent(session);
@@ -1177,7 +1195,7 @@ test('annals_query：写对照埋点，记模型词与原话各查到什么', as
   emit(ctx, 'session/event', session, { type: 'tool/call', data: { name: 'annals_query', arguments: '{"query":"重启插件"}' } });
   await tool.execute({ query: '重启插件' }, { agent });
 
-  const lines = readFileSync(join(root, '.dsh', 'annals-probe.jsonl'), 'utf8')
+  const lines = readFileSync(join(root, '日志', 'annals-probe.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l));
   const cmp = lines.find((x) => x.tool === 'probe-compare');
   assert.ok(cmp, '没有写对照埋点 —— 就没法回答「换输入源有没有收益」');
@@ -1201,13 +1219,13 @@ test('annals_query：用户原话为空时不该写对照埋点', async (t) => {
     '2026-10-20.md': ['# 2026-10-20', '', logEntry(1, '09:00:00', 'A', '生成器加了时间戳字段', '写入时刻。'), ''].join('\n'),
   });
   const ctx = makeCtx(root);
-  apply(ctx, {});
+  apply(ctx, { probe: true });
   const tool = ctx.registered.tools.find((x) => x.name === 'annals_query');
   const agent = makeAgent({ header: {} });
 
   await tool.execute({ query: '时间戳' }, { agent });
 
-  const lines = readFileSync(join(root, '.dsh', 'annals-probe.jsonl'), 'utf8')
+  const lines = readFileSync(join(root, '日志', 'annals-probe.jsonl'), 'utf8')
     .trim().split('\n').map((l) => JSON.parse(l));
   assert.equal(lines.filter((x) => x.tool === 'probe-compare').length, 0,
     '没有用户原话时不该写对照埋点');
@@ -1376,7 +1394,7 @@ async function probeSetup(t) {
   });
   const ctx = makeCtx(root);
   await initWorkspace(ctx, root);
-  apply(ctx, {});
+  apply(ctx, { probe: true });
   const session = {
     id: 'session-probe',
     header: { origin: 'primary' },
@@ -1398,7 +1416,7 @@ test('漏查探测：写了日志提过的文件但没查 → 记一条 probe-mi
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'annals-probe.jsonl');
+  const probe = join(root, '日志', 'annals-probe.jsonl');
   assert.ok(existsSync(probe), '该记漏查却没有埋点');
   const rec = JSON.parse(readFileSync(probe, 'utf8').trim().split('\n')[0]);
   assert.equal(rec.tool, 'probe-miss');
@@ -1420,7 +1438,7 @@ test('漏查探测：这轮查过了就不再记', async (t) => {
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'annals-probe.jsonl');
+  const probe = join(root, '日志', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
   assert.equal(misses.length, 0, '查过了就不该记成漏查');
@@ -1435,7 +1453,7 @@ test('漏查探测：日志里没提过这些词 → 不记（这是在做新东
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'annals-probe.jsonl');
+  const probe = join(root, '日志', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   const misses = lines.map((l) => JSON.parse(l)).filter((r) => r.tool === 'probe-miss');
   assert.equal(misses.length, 0);
@@ -1481,7 +1499,7 @@ test('漏查探测：probe=false 时完全不记', async (t) => {
   });
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
-  const probe = join(root, '.dsh', 'annals-probe.jsonl');
+  const probe = join(root, '日志', 'annals-probe.jsonl');
   const lines = existsSync(probe) ? readFileSync(probe, 'utf8').trim().split('\n').filter(Boolean) : [];
   assert.equal(lines.filter((l) => JSON.parse(l).tool === 'probe-miss').length, 0);
 });
@@ -1505,7 +1523,7 @@ test('自指误报：只调 annals_query、什么都没改 → 不催写日志',
   await tick();
 
   emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
-  // 一轮里唯一发生的事：调了一次检索工具。它会往 .dsh\annals-probe.jsonl 追加一行。
+  // 一轮里唯一发生的事：调了一次检索工具。它会往 日志\annals-probe.jsonl 追加一行。
   emit(ctx, 'session/event', session, {
     type: 'tool/call',
     data: { name: 'annals_query', arguments: JSON.stringify({ query: 'build-index' }) },
@@ -2319,4 +2337,63 @@ test('只读过会话记录、文件被别处追加 → 不催（这一路不制
   emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
 
   assert.equal(agent.steers.length, 0, '宿主自己写的文件不该被算成「我改了工作区」');
+});
+
+// ---------------------------------------------------------------------------
+// 第 4 节：安全关键词（扩宽漏报，不引入误报）
+// ---------------------------------------------------------------------------
+
+test('looksLikeShellWrite：dsh plugin 写子命令 / .NET 静态写 / -OutFile / git clone', () => {
+  // `dsh plugin add|remove` 是真写（装/卸插件改 profile 的 package.json 与 node_modules）
+  assert.equal(looksLikeShellWrite('dsh plugin --profile web add "@michengai/dsh-archive-manager@1.1.18" 2>&1 | Select-Object -Last 40'), true);
+  assert.equal(looksLikeShellWrite('dsh plugin --profile web remove @michengai/dsh-archive-manager'), true);
+  // 只读子命令不中（零误报）
+  assert.equal(looksLikeShellWrite('dsh plugin --profile web list'), false);
+  assert.equal(looksLikeShellWrite('dsh plugin --help'), false);
+  // .NET 静态写文件（SHELL_WRITE_HINTS 里一个字都没有的老缺口）
+  assert.equal(looksLikeShellWrite('[System.IO.File]::WriteAllText("D:\\AI\\out.txt","y")'), true);
+  assert.equal(looksLikeShellWrite('[System.IO.Directory]::CreateDirectory("D:\\AI\\newdir")'), true);
+  // 下载落盘
+  assert.equal(looksLikeShellWrite('Invoke-WebRequest https://example.com/x -OutFile D:\\AI\\x.zip'), true);
+  // 版本控制 / 依赖安装
+  assert.equal(looksLikeShellWrite('git clone https://github.com/duhuashan/dsh-annals.git'), true);
+  assert.equal(looksLikeShellWrite('npm ci'), true);
+});
+
+test('isEnvMutation：只认装/卸插件与 DSH 家目录写，不误伤临时目录的 pnpm add', () => {
+  // 真环境变更
+  assert.equal(isEnvMutation('dsh plugin --profile web add "@michengai/dsh-archive-manager@1.1.18"'), true);
+  assert.equal(isEnvMutation('dsh plugin --profile web remove @michengai/dsh-archive-manager'), true);
+  assert.equal(isEnvMutation('Copy-Item D:\\x.json "$env:DSH_PROFILE_DIR\\package.json"'), true);
+  assert.equal(isEnvMutation('Set-Content "$env:DSH_HOME\\config.yml" hi'), true);
+  // 只读不算
+  assert.equal(isEnvMutation('dsh plugin --profile web list'), false);
+  assert.equal(isEnvMutation('Get-Content "$env:DSH_PROFILE_DIR\\package.json"'), false);
+  // 通用包管理器本身不算环境变更（常在临时目录试跑）
+  assert.equal(isEnvMutation('pnpm add left-pad'), false);
+  assert.equal(isEnvMutation('npm install'), false);
+  assert.equal(isEnvMutation(''), false);
+});
+
+test('环境变更（装插件）但没写日志 → 单独催一次，文案指向运行环境', async (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  await initWorkspace(ctx, root);
+  apply(ctx, {});
+
+  const session = { header: { origin: 'primary' } };
+  const agent = makeAgent(session);
+  emit(ctx, 'agent/created', { agent, source: 'startup' });
+  await tick();
+
+  emit(ctx, 'session/event', session, { type: 'turn/start', data: { turn: 1 } });
+  emit(ctx, 'session/event', session, {
+    type: 'tool/call',
+    data: { name: 'pwsh', arguments: JSON.stringify({ command: 'dsh plugin --profile web add "@michengai/dsh-archive-manager@1.1.18"' }) },
+  });
+  emit(ctx, 'agent/turn-stopping', { agent, turn: 1 });
+
+  assert.equal(agent.steers.length, 1);
+  assert.match(agent.steers[0].content[0].text, /运行环境/);
 });

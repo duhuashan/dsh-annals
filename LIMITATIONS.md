@@ -110,6 +110,14 @@
 
 均已单独修掉（`SHELL_WRITE_HINTS` 只收长到不会偶然撞上的词，短词根走 `SHELL_WRITE_RE`），但它终究是启发式。
 
+0.5.3 又补了几种确定会写的形态（都当关键词/正则，不是新证据）：`dsh plugin add|remove|…`、`[System.IO.File]::WriteAllText(...)`、`Invoke-WebRequest … -OutFile`、`git clone`、`npm ci`。它们仍然只在上面那三种情况下生效。
+
+### 11. 环境变更（装/卸插件、改 DSH 配置）单开一路提醒
+
+这些写入落在**工作区外**（`~/.dsh/profiles`、`$env:DSH_PROFILE_DIR`），工作区快照判 `false`，「改了工作区文件」那条永远催不到 —— 2026-10-28 装 `dsh-archive-manager` 那次就是这么漏的。
+
+现在 `isEnvMutation()` 单独置 `state.envWrite`，轮尾走 **6a-env** 分支发一条**独立**的环境变更提醒，不并入 `changed`。它先过 `looksLikeShellWrite()`，再看是不是 `dsh plugin add|remove|…` 或写 DSH 家目录 —— 裸 `pnpm add` / `npm install` 不算（常在临时目录试跑，认了只误报）。
+
 ---
 
 ## 二、初始化与沙箱
@@ -150,19 +158,19 @@ loaded skill "annals" source must be a string
 
 插件在 `package.json` 声明 `dsh.client.platform: "web"` 并导出 `./client`，宿主把它编进浏览器入口图（`/plugins` 路由，`window.__DSH_BOOT__` 里能看到 `dsh-annals` 条目）。
 
-**非 web profile 没有这一页**，只能改 `cordis.patch.yml`。
+**非 web profile 没有这一页**，只能改 `cordis.patch.yml`。设置页只露 `enabled` 与 `probe` 两个开关；其余八个字段走 YAML。
 
 ---
 
 ## 四、自指误报：插件自己的写入不算「工作区改过」
 
-`OWN_STATE_FILES = new Set([STATE_FILE, '.dsh/annals-probe.jsonl'])` 被排除在整区快照之外。
+`OWN_STATE_FILES = new Set([STATE_FILE, ANNALS_PROBE_FILE])` 被排除在整区快照之外。
 
-**不排除会怎样**（实测 2026-10-25 18:46）：调一次 `annals_query` 会往 `.dsh\annals-probe.jsonl` 追加一行，轮尾快照因此判「工作区改过」，于是当场催「你改过文件但还没写今天的日志」—— 而那一轮只做了一次只读检索，什么都没改。
+**不排除会怎样**（实测 2026-10-25 18:46）：调一次 `annals_query` 会往 `日志\annals-probe.jsonl` 追加一行，轮尾快照因此判「工作区改过」，于是当场催「你改过文件但还没写今天的日志」—— 而那一轮只做了一次只读检索，什么都没改。
 
 危害不只是多一条提醒：它把「用这个工具」和「被催写日志」绑在了一起 —— **查得越多，被催得越勤**。这正好打在本工具要治的病上（检索意愿本来就低）。
 
-只列这两个文件，**不整个跳过 `.dsh\`** —— 用户或模型可能在 `.dsh\skills\` 等子目录里干正事，那些改动该照常算数。
+只列这两个文件，**不整个跳过 `.dsh\`，也不整个跳过 `日志\`** —— 用户或模型可能在 `.dsh\skills\` 或 `日志\` 里干正事，那些改动该照常算数。
 
 ---
 

@@ -2,7 +2,7 @@
  * dsh-annals · Client 半（设置面板里的「日志系统」页）
  *
  * 手写模块，不需要构建工具：`id` 必须等于 package.json 的包名。
- * 六个开关直接读写 Host 的 settings 命名空间 `annals`
+ * 两个开关直接读写 Host 的 settings 命名空间 `annals`
  * （Provider 是 `@deepseek-ai/dsh-settings`，Transport 是
  * `ctx.remote.settings`，与「终端」「Agent 循环」等官方设置页同一套机制）。
  *
@@ -23,14 +23,18 @@ window.__ModuleLoader__.load({
     /** 命名空间候选：profile 条目 id 是 `annals`；少数组合会带 include: 前缀。 */
     const NS_CANDIDATES = ['annals'];
 
-    /** 六个配置字段：键、标题、说明。 */
+    /** 设置页只保留两个开关：总开关 + 检索记录（probe，默认关闭）。 */
+    const DEFAULTS = { enabled: true, probe: false };
+
     const FIELDS = [
-      ['enabled', '日志系统', '关掉后不注册技能、规矩、工具和提醒（已有日志数据不受影响）'],
-      ['skill', '注册 annals 技能', '模型可以通过技能加载日志写法'],
-      ['section', '常驻注入日志规矩', '每轮系统提示词里带六条日志规矩，不依赖技能加载'],
-      ['reminder', '轮次收尾提醒', '改了文件但没写今天日志时提醒一次'],
-      ['initTool', 'annals_init 工具', '用于启用日志系统，或记录「本工作区不启用」'],
-      ['skipSubagents', '跳过子代理会话', '子代理不提醒、不初始化'],
+      ['enabled', '日志系统', '关掉后不注册技能、规矩、工具和提醒（已有日志数据不受影响）。其余选项在配置文件中维护。'],
+      ['probe', '检索记录', '默认关闭。开启后每次 AI 调用插件检索工具会记录到 日志\\annals-probe.jsonl，用于排查为什么搜不到。可以在配置文件里修改。'],
+    ];
+
+    /** 从界面隐藏、但仍可在配置文件中修改的字段（默认全为 true）。 */
+    const HIDDEN_FIELDS = [
+      'skill', 'section', 'reminder', 'initTool', 'skipSubagents',
+      'envReminder', 'queryTool', 'linksTool',
     ];
 
     /** `ctx.remote.settings`，apply 时注入；组件通过它读写。 */
@@ -94,16 +98,27 @@ window.__ModuleLoader__.load({
       return rows.find((row) => /(^|[:/])annals$/.test(String(row.ns || ''))) || null;
     }
 
-    /** 生效值：只把 false 当关闭，缺失=默认开。 */
+    /** 生效值：显式 boolean 优先，缺失时按字段默认值。 */
     function effective(row, field) {
       const value = row && row.value && row.value[field];
-      return value !== false;
+      return typeof value === 'boolean' ? value : DEFAULTS[field] !== false;
     }
 
-    /** 该字段是否被用户覆盖（与默认值不同）。 */
+    /** 该字段是否被用户覆盖（显式值与默认值不同）。 */
     function overridden(row, field) {
       const value = row && row.value && row.value[field];
-      return value !== undefined && value !== true;
+      return value !== undefined && value !== DEFAULTS[field];
+    }
+
+    /** 隐藏字段里被显式改成非默认值的数量。 */
+    function hiddenOverrideCount(row) {
+      if (!row || !row.value) return 0;
+      let count = 0;
+      for (const field of HIDDEN_FIELDS) {
+        const value = row.value[field];
+        if (value !== undefined && value !== true) count += 1;
+      }
+      return count;
     }
 
     function BackLink(props) {
@@ -168,8 +183,8 @@ window.__ModuleLoader__.load({
         for (const [field] of FIELDS) {
           if (draft[field] === effective(state.row, field)) continue;
           const current = state.row && state.row.value ? state.row.value[field] : undefined;
-          // 改回默认值（true）时删掉 patch 里的显式 false，而不是写一个 true。
-          if (draft[field] === true && current === false) {
+          // 改回默认值时删掉 patch 里的显式值，而不是写一个同值覆盖。
+          if (draft[field] === DEFAULTS[field] && current !== undefined && current !== DEFAULTS[field]) {
             ops.push({ op: 'unset', path: [field] });
           } else {
             ops.push({ op: 'set', path: [field], value: draft[field] });
@@ -276,6 +291,13 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        hiddenOverrideCount(row) > 0
+          ? h(
+              'div',
+              { style: { ...descStyle, marginTop: '8px' } },
+              `检测到 ${hiddenOverrideCount(row)} 项设置被配置文件覆盖，可在配置文件中查看。`,
+            )
+          : null,
         h(
           'div',
           { style: { display: 'flex', alignItems: 'center', gap: '10px', marginTop: '14px' } },

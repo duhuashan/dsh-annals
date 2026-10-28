@@ -4,7 +4,7 @@
 
 给 AI 一份跨会话的记忆：每天一个日志文件、一份可检索的索引、一个独立的 git 仓库。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.5.2 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.5.3 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
 
 ## 为什么装它
 
@@ -42,7 +42,7 @@ AI 的每次会话都开在一张白纸上。上一轮敲定的方案、踩过�
 从 [Releases](https://github.com/duhuashan/dsh-annals/releases) 下载最新的 `dsh-annals-<版本>.tgz`，然后：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-annals-0.5.2.tgz
+dsh plugin --profile web add C:\path\to\dsh-annals-0.5.3.tgz
 ```
 
 装完**重启 DSH** 生效。
@@ -86,13 +86,14 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 > 顺带一个坑：插件跑的是裸 `git init`，全局没设 `init.defaultBranch` 时新仓叫 `master`。想要 `main` 就自己 `git branch -m main`。
 
-### 干活的时候：两条提醒
+### 干活的时候：三条提醒
 
 提醒**不显示在 GUI 对话流里** —— 它通过 `agent.steer()` 注入给模型，你在界面上看不到，只会发现 AI 突然回头补了日志。
 
 | 什么时候 | 提醒什么 |
 |---|---|
 | 这一轮改了文件，但没写今天的日志 | 催它判断该不该记、该记就写 |
+| 这一轮装了/卸了插件、改了 DSH 配置，但没写日志 | 这类写入在工作区外，「改了文件」那条看不见，单独催一次 |
 | 日志写了，但 `_日志索引.md` 没更新 | 催它跑生成器、提交 |
 
 **它只提醒，不代劳**。该不该记、记什么、什么时候跑生成器，仍然由模型判断和执行。插件不替模型写文件 —— 好处是「谁写的」永远可追溯。
@@ -132,6 +133,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 | `annals` 技能 | 写日志的完整规矩（该不该写、写多细、怎么排版、写完做什么） | 模型要写日志时自动加载 |
 | 常驻规矩 | 一段精简版日志规矩，**每轮**都在系统提示里 | 防止「模型没加载技能就忘了要记」 |
 | 轮次提醒 | 轮次收尾时判断这一轮改了文件却没写日志 | 提醒本身不占你注意力，只在它漏记时出现 |
+| 环境变更提醒 | 判断这一轮装/卸了插件、改了 DSH 配置却没写日志 | 这类写入在工作区外，普通「改了文件」提醒覆盖不到 |
 | 索引新鲜度提醒 | 判断日志写了但索引没重新生成 | 防「写了日志就以为完事」—— 索引不跑，检索永远停在旧快照 |
 | `annals_init` | 一次初始化整个日志系统 | 首次启用；或反悔后重新启用 |
 | `annals_query` | **按内容找**：忘了一件事在哪，用关键词捞 | 动手做一件「感觉做过」的事之前 |
@@ -145,23 +147,24 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 插件带一个 GUI 开关页：**设置面板 → 日志系统**。
 
-六个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
+两个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
 
 > 插件页卡片（「插件」→ dsh-annals）不渲染配置表单 —— 那是 DSH 的既有行为：插件页只显示包信息与运行状态，配置表单由功能包自己注册设置页。
 
-### 九个字段，六个在 GUI 里
+### 十个字段，两个在 GUI 里
 
 | 字段 | 默认 | 含义 | GUI |
 |---|---|---|---|
 | `enabled` | `true` | 总开关 | ✅ |
-| `skill` | `true` | 注册 `annals` 技能 | ✅ |
-| `section` | `true` | 注入常驻日志规矩 | ✅ |
-| `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ✅ |
-| `initTool` | `true` | 注册 `annals_init` 工具 | ✅ |
-| `skipSubagents` | `true` | 子代理会话不提醒 | ✅ |
+| `probe` | `false` | 检索记录：把每次 AI 调用插件检索工具记到 `日志\annals-probe.jsonl`，默认关闭 | ✅ |
+| `skill` | `true` | 注册 `annals` 技能 | ❌ 只能改 YAML |
+| `section` | `true` | 注入常驻日志规矩 | ❌ 只能改 YAML |
+| `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ❌ 只能改 YAML |
+| `envReminder` | `true` | 环境变更提醒（装/卸插件、改 DSH 配置但没写日志） | ❌ 只能改 YAML |
+| `initTool` | `true` | 注册 `annals_init` 工具 | ❌ 只能改 YAML |
+| `skipSubagents` | `true` | 子代理会话不提醒 | ❌ 只能改 YAML |
 | `queryTool` | `true` | 注册 `annals_query` 工具 | ❌ 只能改 YAML |
 | `linksTool` | `true` | 注册 `annals_links` 工具 | ❌ 只能改 YAML |
-| `probe` | `true` | 漏查探测：只记到 `.dsh\annals-probe.jsonl`，不注入、不打扰 | ❌ 只能改 YAML |
 
 没有 GUI（headless / 非 web profile）时，直接在 `cordis.patch.yml` 里 override `annals` 的 config：
 
@@ -173,7 +176,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 改 YAML 后**需要重启 DSH**。
 
-> **实现细节（改代码才会撞上）**：九个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 解包，不能直接读 `config.字段`。
+> **实现细节（改代码才会撞上）**：十个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 解包，不能直接读 `config.字段`。
 
 ## 卸载
 

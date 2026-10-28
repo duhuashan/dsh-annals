@@ -7,7 +7,7 @@
 ```
 dsh-annals/
 ├── lib/
-│   ├── index.js        2013 行 · 插件主体：注册、状态机、提醒引擎、路径判定
+│   ├── index.js        2108 行 · 插件主体：注册、状态机、提醒引擎、路径判定
 │   ├── query.js         604 行 · 检索算法，纯函数、不碰 ctx、可单测
 │   └── links.js         892 行 · 双向链接：解析反引号引用、建索引、出链入链
 ├── client/
@@ -103,6 +103,7 @@ return (await pathExists(ctx, cwd, `${LOG_DIR}/${INDEX_SCRIPT}`)) ? 'enabled' : 
 | `pathStamps` | 命令串里点名过的路径 → 轮首戳 | **跨 `tool/call` 累积**，到轮尾才整体比对 |
 | `logDirty` | 写过日志但索引没跑 | **粘性标记**：索引停在旧快照是持续状态，只在写的那个 turn 检查会漏 |
 | `reminded` / `remindedIndex` | 已提醒过的轮次号 | 每轮每类提醒最多一次 |
+| `envWrite` / `envReminded` | 本轮是否改过运行环境 / 已就环境变更提醒过的轮次 | 与工作区改动**分开计**，见「环境变更单开一路」 |
 
 `turn/start` 时如果发现 `state.workspace === undefined`（会话恢复、插件热重载后继续旧会话），会补判一次状态 —— 但**只判状态、不注入引导**，引导只在 `agent/created` 时问一次。
 
@@ -156,9 +157,9 @@ if (byWorkspace !== undefined || official !== undefined || byPathsVote) {
 | 跳过的 | 为什么 |
 |---|---|
 | `.git` | `git status` / `git add` 本身会重写 `.git\index`，不跳会把自己扫成「改过」 |
-| `.dsh\log-system.json`、`.dsh\annals-probe.jsonl` | **插件自己写的**。不跳就是自指误报：调一次 `annals_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
+| `.dsh\log-system.json`、`日志\annals-probe.jsonl` | **插件自己写的**。不跳就是自指误报：调一次 `annals_query` 追加一行探测记录，轮尾快照判「改过」，当场催写日志 —— 查得越多被催得越勤，正好打在本工具要治的病上 |
 
-只跳过这两个文件，**不整个跳过 `.dsh\`** —— 用户或模型可能在 `.dsh\skills\` 里干正事。
+只跳过这两个文件，**不整个跳过 `.dsh\`，也不整个跳过 `日志\`** —— 用户或模型可能在 `.dsh\skills\` 或 `日志\` 里干正事，那些改动该照常算数。
 
 ### `SKIP_RE`：用户说「不用记」
 
@@ -181,6 +182,14 @@ const SKIP_RE =
 写日志那条优先于索引那条，因为索引检查本来就要求日志先存在。同一轮里两条互斥。
 
 索引提醒有**粘性**：`logDirty` 置真后留到索引被确认新鲜为止，不是当轮催完就断。
+
+### 环境变更单开一路（6a-env）
+
+「装/卸插件、改 DSH 配置」这类写入落在**工作区外**（`~/.dsh/profiles`、`$env:DSH_PROFILE_DIR`），工作区快照判 `false`，6a 永远催不到 —— 2026-10-28 装 `dsh-archive-manager` 那次就是这么漏的。
+
+现在 `isEnvMutation()` 在 `tool/call` 时单独置 `state.envWrite`，轮尾多一条 **6a-env** 分支：写命令里出现 `dsh plugin add|remove|install|uninstall|update|link|unlink`，或写 `$env:DSH_PROFILE_DIR` / `%DSH_HOME%` / `.dsh\profiles` 等家目录路径，就算改过运行环境。它**不并入 `changed`**，与「改了工作区文件」分开计；同一轮两条提醒互斥（6a 优先，因为它已经覆盖了「工作区也改了」的情形）。
+
+刻意不认裸 `pnpm add` / `npm install` —— 它们在临时目录试跑也是写命令，改的却是临时的 `node_modules`，不是运行环境，认了只会误报。
 
 ---
 
@@ -414,21 +423,21 @@ export const Config = z.object({
 **代价**：Loader 校验后的配置值不是 boolean，而是 cosmokit 的**运行时引用对象**（`{ get(), [cosmokit.volatile.write] }`，`cosmokit\lib\index.js:102-110`）。所以插件内部必须统一用 `readFlag()` 解包：
 
 ```js
-export function readFlag(config, field) {
+export function readFlag(config, field, fallback = true) {
   const raw = config?.[field];
-  if (raw === undefined) return true;
+  if (raw === undefined) return fallback;
   const value = raw !== null && typeof raw === 'object' && typeof raw.get === 'function' ? raw.get() : raw;
-  return value !== false;      // 缺省 true，只有显式 false 才算关
+  return value !== false;      // 只有显式 false 才算关
 }
 ```
 
 **不能直接读 `config.字段`** —— 那拿到的是对象，永远真值。
 
-### GUI 只渲染 6 个
+### GUI 只渲染 2 个
 
-`queryTool` / `linksTool` / `probe` 不在 `client/client.js` 的 `FIELDS` 数组里，只能改 `cordis.patch.yml`。
+`client/client.js` 的 `FIELDS` 只有 `enabled` 和 `probe`。其余八个字段（`skill` / `section` / `reminder` / `envReminder` / `initTool` / `skipSubagents` / `queryTool` / `linksTool`）只能改 `cordis.patch.yml`。
 
-三个字段里有两个是后加的（0.4.0 的双链、0.4.0 的漏查探测），第三个 `probe` 是调试用的观测开关 —— 保持 YAML-only 是有意的：GUI 上摆太多开关，用户会以为每个都该调。
+这是有意的：前六个是日志系统的基础行为，少一个插件就不完整，不该让用户以为「每个都该调」；`queryTool` / `linksTool` 是工具注册开关，同属基础能力。GUI 上摆太多开关，只会制造「关了也能用」的错觉。
 
 ### GUI 的写路径
 
