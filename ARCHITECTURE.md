@@ -14,6 +14,7 @@ dsh-annals/
 │   └── client.js       设置面板的「日志系统」页（web 端 client 半）
 ├── assets/
 │   ├── annals.md      329 行 · annals 技能的正文，运行时注册进技能系统
+│   ├── persona.md     小鲸鱼人设（标准版），`persona: true` 时作为独立 section 注入
 │   ├── build-index.mjs  索引生成器，初始化时**复制**进用户工作区
 │   ├── log-parse.mjs    生成器的解析模块，同样复制进工作区
 │   └── gitattributes    复制成 日志\.gitattributes
@@ -28,7 +29,7 @@ dsh-annals/
 └── package.json
 ```
 
-`lib/index.js` 之所以大，是因为它有 **7 个互不相关的能力块**（技能注册、常驻规矩、三个工具、引导注入、提醒引擎、漏查探测），并且带着大量「为什么不是另一种写法」的注释。它是单文件无内部依赖，拆成多个文件只会让人在 import 之间跳来跳去。
+`lib/index.js` 之所以大，是因为它有 **8 个互不相关的能力块**（技能注册、常驻规矩、小鲸鱼人设、三个工具、引导注入、提醒引擎、漏查探测），并且带着大量「为什么不是另一种写法」的注释。它是单文件无内部依赖，拆成多个文件只会让人在 import 之间跳来跳去。
 
 ---
 
@@ -43,7 +44,7 @@ export const inject = ['skills', 'systemPrompt', 'tools', 'fs', 'shell', 'workin
 | 服务 / 钩子 | 用途 | 关键约束 |
 |---|---|---|
 | `ctx.skills.register()` | 注册 `annals` 技能 | **必须带 `source`**，否则加载时抛 `loaded skill "annals" source must be a string` |
-| `ctx.systemPrompt.section()` | 注入常驻规矩，`order: 150` | 不依赖技能加载；每轮都在系统提示里 |
+| `ctx.systemPrompt.section()` | 注入常驻规矩，`order: 150`；`persona: true` 时另注入人设 section，`order: 100` | 不依赖技能加载；每轮都在系统提示里 |
 | `ctx.tools.register()` | 注册 `annals_init` / `annals_query` / `annals_links` / `annals_ignore` | 描述文字是「装门」的一半 —— 模型只在读到它时才知道有这个工具 |
 | `ctx.fs.*` | 读写文件、判存在 | 直调时**必须传沙箱策略**，否则退回 `workspace-write` + 进程 cwd |
 | `ctx.shell.resolve()/execute()` | 跑 `git init` | 同样必须传会话策略 |
@@ -435,12 +436,12 @@ await writeStateFile(ctx, cwd, 'enabled', policy);
 
 ## 配置系统
 
-### 十个字段与 `.volatile()`
+### 十一个字段与 `.volatile()`
 
 ```js
 export const Config = z.object({
   enabled: z.boolean().default(true).volatile(),
-  // … 共九个
+  // … 共十个
 });
 ```
 
@@ -459,9 +460,9 @@ export function readFlag(config, field, fallback = true) {
 
 **不能直接读 `config.字段`** —— 那拿到的是对象，永远真值。
 
-### GUI 只渲染 2 个
+### GUI 只渲染 3 个
 
-`client/client.js` 的 `FIELDS` 只有 `enabled` 和 `probe`。其余八个字段（`skill` / `section` / `reminder` / `envReminder` / `initTool` / `skipSubagents` / `queryTool` / `linksTool`）只能改 `cordis.patch.yml`。
+`client/client.js` 的 `FIELDS` 只有 `enabled`、`probe` 和 `persona`。其余八个字段（`skill` / `section` / `reminder` / `envReminder` / `initTool` / `skipSubagents` / `queryTool` / `linksTool`）只能改 `cordis.patch.yml`。
 
 这是有意的：前六个是日志系统的基础行为，少一个插件就不完整，不该让用户以为「每个都该调」；`queryTool` / `linksTool` 是工具注册开关，同属基础能力。GUI 上摆太多开关，只会制造「关了也能用」的错觉。
 
@@ -481,11 +482,11 @@ export function readFlag(config, field, fallback = true) {
 
 ## 测试策略
 
-五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **275 项**（273 pass / 2 skip）。
+五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **276 项**（274 pass / 2 skip）。
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
-| `test/offline.mjs` | **116**（另 2 个 skip） | 见下 |
+| `test/offline.mjs` | **117**（另 2 个 skip） | 见下 |
 | `test/build-index.test.mjs` | **77** | 生成器端到端（真实临时目录 + 真实子进程） |
 | `test/links.test.mjs` | **75** | 双向链接（纯函数 + 临时工作区夹具） |
 | `test/version.test.mjs` | **6** | 版本号一致性与打包清单（见下） |

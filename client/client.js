@@ -23,12 +23,13 @@ window.__ModuleLoader__.load({
     /** 命名空间候选：profile 条目 id 是 `annals`；少数组合会带 include: 前缀。 */
     const NS_CANDIDATES = ['annals'];
 
-    /** 设置页只保留两个开关：总开关 + 检索记录（probe，默认关闭）。 */
-    const DEFAULTS = { enabled: true, probe: false };
+    /** 设置页保留三个开关：总开关 + 检索记录 + 小鲸鱼人设（后两个默认关闭）。 */
+    const DEFAULTS = { enabled: true, probe: false, persona: false };
 
     const FIELDS = [
       ['enabled', '日志系统', '关掉后不注册技能、规矩、工具和提醒（已有日志数据不受影响）。其余选项在配置文件中维护。'],
       ['probe', '检索记录', '默认关闭。开启后每次 AI 调用插件检索工具会记录到 日志\\annals-probe.jsonl，用于排查为什么搜不到。可以在配置文件里修改。'],
+      ['persona', '小鲸鱼人设', '默认关闭。开启后向系统提示注入标准版「小鲸鱼」人设：自称我/小鲸鱼/本鲸，称你为老大，偶尔感慨一句，不影响结论和干活。'],
     ];
 
     /** 从界面隐藏、但仍可在配置文件中修改的字段（默认全为 true）。 */

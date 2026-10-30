@@ -158,7 +158,7 @@ loaded skill "annals" source must be a string
 
 插件在 `package.json` 声明 `dsh.client.platform: "web"` 并导出 `./client`，宿主把它编进浏览器入口图（`/plugins` 路由，`window.__DSH_BOOT__` 里能看到 `dsh-annals` 条目）。
 
-**非 web profile 没有这一页**，只能改 `cordis.patch.yml`。设置页只露 `enabled` 与 `probe` 两个开关；其余八个字段走 YAML。
+**非 web profile 没有这一页**，只能改 `cordis.patch.yml`。设置页只露 `enabled`、`probe` 与 `persona` 三个开关；其余八个字段走 YAML。
 
 ---
 

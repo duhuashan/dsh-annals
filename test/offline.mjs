@@ -206,8 +206,8 @@ test('Config：导出 Standard Schema，validate 填充默认值', () => {
   assert.ok(Config, '应导出 Config');
   assert.equal(Config['~standard'].vendor, 'schemastery');
 
-  // 六个字段必须都是 volatile，否则 settings.describe() 里不会出现 annals 命名空间。
-  for (const field of ['enabled', 'skill', 'section', 'reminder', 'initTool', 'skipSubagents']) {
+  // 这些字段必须都是 volatile，否则 settings.describe() 里不会出现 annals 命名空间。
+  for (const field of ['enabled', 'skill', 'section', 'persona', 'reminder', 'initTool', 'skipSubagents']) {
     assert.equal(Config.dict[field].meta.volatile, true, field + ' 应为 volatile');
   }
 
@@ -218,10 +218,13 @@ test('Config：导出 Standard Schema，validate 填充默认值', () => {
     assert.equal(typeof defaults.value[field].get, 'function', field + ' 应是引用对象');
     assert.equal(defaults.value[field].get(), true, field + ' 默认应为 true');
   }
+  assert.equal(typeof defaults.value.persona.get, 'function', 'persona 应是引用对象');
+  assert.equal(defaults.value.persona.get(), false, 'persona 默认应为 false');
 
-  const custom = Config['~standard'].validate({ reminder: false });
+  const custom = Config['~standard'].validate({ reminder: false, persona: true });
   assert.equal(custom.value.reminder.get(), false);
   assert.equal(custom.value.enabled.get(), true);
+  assert.equal(custom.value.persona.get(), true);
 });
 
 test('readFlag：解包 volatile 引用、缺省 true、显式 false 才算关', () => {
@@ -415,6 +418,21 @@ test('apply 注册技能、规矩、工具', (t) => {
   assert.equal(ignore.output.schema.type, 'string');
   assert.equal(typeof ignore.output.render, 'function');
   assert.deepEqual(ignore.output.render(null, 'x'), [{ type: 'text', text: 'x' }]);
+});
+
+test('apply persona=true 注册独立的人设 section', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  apply(ctx, { persona: true });
+
+  assert.equal(ctx.registered.sections.length, 2);
+  const persona = ctx.registered.sections.find((x) => x.name === 'annals-persona');
+  assert.ok(persona, '开启 persona 后应注册 annals-persona section');
+  assert.equal(persona.order, 100, '人设 section 应在 PERSONA_PREFIX(0) 与日志规矩(150) 之间');
+  assert.match(persona.text, /小鲸鱼/);
+  assert.match(persona.text, /老大/);
+  assert.match(persona.text, /不改变结论/);
 });
 
 test('apply 配置开关能关掉每一项', (t) => {

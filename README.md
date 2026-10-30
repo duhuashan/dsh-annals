@@ -132,6 +132,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 |---|---|---|
 | `annals` 技能 | 写日志的完整规矩（该不该写、写多细、怎么排版、写完做什么） | 模型要写日志时自动加载 |
 | 常驻规矩 | 一段精简版日志规矩，**每轮**都在系统提示里 | 防止「模型没加载技能就忘了要记」 |
+| 小鲸鱼人设 | 标准版语气提示，默认关闭，设置页可开 | 想让每轮对话多一点趣味时 |
 | 轮次提醒 | 轮次收尾时判断这一轮改了文件却没写日志 | 提醒本身不占你注意力，只在它漏记时出现 |
 | 环境变更提醒 | 判断这一轮装/卸了插件、改了 DSH 配置却没写日志 | 这类写入在工作区外，普通「改了文件」提醒覆盖不到 |
 | 索引新鲜度提醒 | 判断日志写了但索引没重新生成 | 防「写了日志就以为完事」—— 索引不跑，检索永远停在旧快照 |
@@ -160,16 +161,17 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 插件带一个 GUI 开关页：**设置面板 → 日志系统**。
 
-两个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
+三个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
 
 > 插件页卡片（「插件」→ dsh-annals）不渲染配置表单 —— 那是 DSH 的既有行为：插件页只显示包信息与运行状态，配置表单由功能包自己注册设置页。
 
-### 十个字段，两个在 GUI 里
+### 十一个字段，三个在 GUI 里
 
 | 字段 | 默认 | 含义 | GUI |
 |---|---|---|---|
 | `enabled` | `true` | 总开关 | ✅ |
 | `probe` | `false` | 检索记录：把每次 AI 调用插件检索工具记到 `日志\annals-probe.jsonl`，默认关闭 | ✅ |
+| `persona` | `false` | 注入标准版「小鲸鱼」人设（自称我/小鲸鱼/本鲸，称你为老大，偶尔感慨） | ✅ |
 | `skill` | `true` | 注册 `annals` 技能 | ❌ 只能改 YAML |
 | `section` | `true` | 注入常驻日志规矩 | ❌ 只能改 YAML |
 | `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ❌ 只能改 YAML |
@@ -189,7 +191,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 改 YAML 后**需要重启 DSH**。
 
-> **实现细节（改代码才会撞上）**：十个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 解包，不能直接读 `config.字段`。
+> **实现细节（改代码才会撞上）**：十一个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 解包，不能直接读 `config.字段`。
 
 ## 卸载
 
