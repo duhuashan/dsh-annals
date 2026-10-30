@@ -11,7 +11,7 @@ dsh-annals/
 │   ├── query.js         604 行 · 检索算法，纯函数、不碰 ctx、可单测
 │   └── links.js         892 行 · 双向链接：解析反引号引用、建索引、出链入链
 ├── client/
-│   └── client.js       979 行 · 设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
+│   └── client.js       978 行 · 设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
 ├── assets/
 │   ├── annals.md      341 行 · annals 技能的正文，运行时注册进技能系统
 │   ├── persona.md     小鲸鱼人设（标准版），`persona: true` 时作为独立 section 注入
