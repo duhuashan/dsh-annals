@@ -83,7 +83,7 @@ window.__ModuleLoader__.load({
         default: false,
         kind: 'boolean',
         title: '小鲸鱼人设',
-        description: '默认关闭。开启后按下方选择向系统提示注入一份人设：自称我/小鲸鱼/本鲸，称你为老大，偶尔感慨一句，不影响结论和干活。',
+        description: '默认关闭。开启后使用下方选中的人设，关闭则不注入任何人设。',
       },
       {
         key: 'personaPreset',
@@ -323,7 +323,7 @@ window.__ModuleLoader__.load({
     }
 
     function PersonaCard(props) {
-      const { title, description, token, selected, disabled, preview, onSelect, onEdit, onCopy, onDelete } = props;
+      const { title, description, token, selected, disabled, preview, onSelect, onView, onEdit, onCopy, onDelete } = props;
       const action = (label, handler, color) =>
         h(
           'button',
@@ -405,6 +405,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '2px' } },
+          onView ? action('查看', onView) : null,
           onEdit ? action('编辑', onEdit) : null,
           onCopy ? action('复制', onCopy) : null,
           onDelete ? action('删除', onDelete, COLORS.danger) : null,
@@ -421,12 +422,14 @@ window.__ModuleLoader__.load({
       const [tab, setTab] = React.useState('logging');
       const [personaView, setPersonaView] = React.useState('cards');
       const [editingId, setEditingId] = React.useState(null);
+      const [viewingPreset, setViewingPreset] = React.useState(null);
 
       const load = React.useCallback(async () => {
         setState({ status: 'loading', error: null, row: null, namespaces: [] });
         setMessage(null);
         setPersonaView('cards');
         setEditingId(null);
+        setViewingPreset(null);
         try {
           const view = await describeAll();
           const row = findRow(view);
@@ -477,7 +480,13 @@ window.__ModuleLoader__.load({
 
       const editCustom = (id) => {
         setEditingId(id);
+        setViewingPreset(null);
         setPersonaView('edit');
+      };
+
+      const viewPreset = (preset) => {
+        setViewingPreset(preset);
+        setPersonaView('view');
       };
 
       const updateCustom = (id, patch) => {
@@ -497,6 +506,7 @@ window.__ModuleLoader__.load({
           personaPreset: 'custom:' + id,
         }));
         setEditingId(id);
+        setViewingPreset(null);
         setPersonaView('edit');
       };
 
@@ -599,6 +609,7 @@ window.__ModuleLoader__.load({
         setDraft(values);
         setPersonaView('cards');
         setEditingId(null);
+        setViewingPreset(null);
         setMessage(null);
       };
 
@@ -634,18 +645,26 @@ window.__ModuleLoader__.load({
       const selectedPreset = String(draft.personaPreset || 'standard');
       const editingCustom = editingId ? customs.find((item) => item.id === editingId) : null;
       const customText = editingCustom ? String(editingCustom.text || '') : '';
+      const viewingPresetData =
+        viewingPreset === 'standard'
+          ? { title: '标准版', text: PRESET_TEXTS.standard }
+          : viewingPreset === 'simple'
+            ? { title: '精简版', text: PRESET_TEXTS.simple }
+            : null;
       const presets = [
         {
           id: 'standard',
           title: '标准版',
           description: '默认风格：自称我/小鲸鱼/本鲸，称你为老大，偶尔感慨一句。',
           token: '约 300–440 token',
+          viewable: true,
         },
         {
           id: 'simple',
           title: '精简版',
           description: '更短，只保留身份与称呼，语气更克制。',
           token: '约 120–165 token',
+          viewable: true,
         },
         ...customs.map((item) => ({
           id: 'custom:' + item.id,
@@ -718,7 +737,50 @@ window.__ModuleLoader__.load({
                   )
                 : null,
             )
-          : personaView === 'edit'
+          : personaView === 'view'
+            ? h(
+                'div',
+                { style: { marginTop: '6px' } },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    onClick: () => {
+                      setPersonaView('cards');
+                      setEditingId(null);
+                      setViewingPreset(null);
+                    },
+                    style: { ...ghostStyle, marginBottom: '10px' },
+                  },
+                  '← 返回人设列表',
+                ),
+                viewingPresetData
+                  ? h(
+                      'div',
+                      null,
+                      h('div', { style: { ...titleStyle, fontSize: '14px', fontWeight: '600' } }, '查看人设'),
+                      h('div', { style: descStyle }, '只读预览，不能修改。'),
+                      h('div', { style: { ...descStyle, marginTop: '10px', marginBottom: '4px' } }, '名称'),
+                      h('input', {
+                        value: viewingPresetData.title,
+                        readOnly: true,
+                        style: { ...inputStyle, cursor: 'default' },
+                      }),
+                      h('div', { style: { ...descStyle, marginTop: '10px', marginBottom: '4px' } }, '正文'),
+                      h('textarea', {
+                        value: viewingPresetData.text,
+                        readOnly: true,
+                        style: { ...textareaStyle, cursor: 'default' },
+                      }),
+                      h(
+                        'div',
+                        { style: { ...descStyle, marginTop: '6px' } },
+                        `${viewingPresetData.text.length}/${CUSTOM_TEXT_LIMIT}`,
+                      ),
+                    )
+                  : h('div', { style: descStyle }, '没有找到这张人设卡，请返回列表重试。'),
+              )
+            : personaView === 'edit'
             ? h(
                 'div',
                 { style: { marginTop: '6px' } },
@@ -816,6 +878,7 @@ window.__ModuleLoader__.load({
                       disabled: saving || readonly,
                       preview: preset.preview,
                       onSelect: () => selectPreset(preset.id),
+                      onView: preset.viewable ? () => viewPreset(preset.id) : undefined,
                       onEdit: preset.editable ? () => editCustom(preset.customId) : undefined,
                       onCopy: () => copyPreset(preset.id),
                       onDelete: preset.editable ? () => deleteCustom(preset.customId) : undefined,

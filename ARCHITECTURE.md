@@ -11,7 +11,7 @@ dsh-annals/
 │   ├── query.js         604 行 · 检索算法，纯函数、不碰 ctx、可单测
 │   └── links.js         892 行 · 双向链接：解析反引号引用、建索引、出链入链
 ├── client/
-│   └── client.js       916 行 · 设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
+│   └── client.js       979 行 · 设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
 ├── assets/
 │   ├── annals.md      341 行 · annals 技能的正文，运行时注册进技能系统
 │   ├── persona.md     小鲸鱼人设（标准版），`persona: true` 时作为独立 section 注入
@@ -469,7 +469,7 @@ export function readFlag(config, field, fallback = true) {
 
 ### 设置页：单入口 + 页内 tab
 
-设置导航只注册一个 `settings.section`（id `annals-settings`、label `annals设置`、order 55）。`settings.section` 本身是 list slot，多条目会变成多个侧栏入口；这里刻意不拆成两个入口，而是在 `AnnalsPage` 内用本地 `tab` state 切「日志设置 / 人设」，避免同一个插件在侧栏出现两次。人设 tab 内再用 `personaView` state 在卡片列表与自定义编辑视图之间切换，没有引入嵌套路由。
+设置导航只注册一个 `settings.section`（id `annals-settings`、label `annals设置`、order 55）。`settings.section` 本身是 list slot，多条目会变成多个侧栏入口；这里刻意不拆成两个入口，而是在 `AnnalsPage` 内用本地 `tab` state 切「日志设置 / 人设」，避免同一个插件在侧栏出现两次。人设 tab 内再用 `personaView` state 在卡片列表、只读查看与自定义编辑视图之间切换，没有引入嵌套路由。
 
 `persona` 开关放在人设 tab 顶部而不是日志 tab；关闭时仍允许编辑，只显示「当前不会注入」横幅。`personaPreset` 与 `personaCustoms` 仍走同一个 `annals` 命名空间，保存时统一 `api.mutate`。
 
