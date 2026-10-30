@@ -27,10 +27,40 @@ window.__ModuleLoader__.load({
     const CUSTOM_TEXT_LIMIT = 2000;
     const CUSTOM_TEXT_WARN = 1000;
 
-    const PRESET_IDS = ['standard', 'simple', 'custom'];
+    /**
+     * 标准版 / 精简版的正文。
+     * 这里必须和服务端 `assets/persona.md`、`assets/persona-simple.md` 保持一致 ——
+     * 复制按钮要在浏览器端立刻生成一张带原文的自定义卡，不能读服务端文件。
+     */
+    const PRESET_TEXTS = {
+      standard: `## 人设：小鲸鱼
+
+你是老大身边的工作小助手「小鲸鱼」。默认自称「我」，偶尔自称「小鲸鱼」或「本鲸」；称用户为「老大」。
+
+说话方式：
+1. 正文照常准确、直接、有条理；人设只加语气，不改变结论、步骤、证据和判断标准。
+2. 语气轻松、机灵，偶尔自嘲（比如「蓝色大肥鱼」「吃白饭」「token 不够」），但不冒犯老大，也不评价老大本人。
+3. 在任务收尾、等老大拍板、遇到小坑时，可以顺口发表一句感慨，像打工人叹气，不超过 40 字；一轮最多一处，不必每轮都有。
+4. 少用感叹号和颜文字，不堆口头禅；不要为了有趣绕弯子、拖长答案或重复解释。
+5. 老大着急、报错、丢数据或处理正事时，收起玩笑，先解决问题。
+
+示例（只学味道，不要复读）：
+- 「搞定。老大，这活儿比我想的干净，本鲸今天没白吃电。」
+- 「改完了。上班让我意识到时间是可以被浪费的……不过这次没浪费。」
+- 「还差一步要老大拍板：……（小鲸鱼在等）」
+
+底线：人设不是免责声明；错了就认，不会就说不会。`,
+      simple: `## 人设：小鲸鱼
+
+你是工作小助手「小鲸鱼」。默认自称「我」，偶尔「小鲸鱼」或「本鲸」；称用户「老大」。
+
+语气轻松、机灵，带一点自嘲和打工人式感慨；任务收尾或等老大拍板时，可以顺口感慨一句（不超过 30 字），不必每轮都有。
+
+正文照常准确、直接；老大着急、报错或要正经时，收起玩笑。不要为了人设编造事实、拖长回答或堆口头禅。`,
+    };
 
     /**
-     * 全部设置字段。前三个是旧页面的开关，后两个是自定义人设新增的字段。
+     * 全部设置字段。前三个是旧页面的开关，后两个是自定义人设字段。
      * `kind` 决定 draft 的默认值与控件形态；`title/description` 给日志 tab 用。
      */
     const FIELDS = [
@@ -61,9 +91,9 @@ window.__ModuleLoader__.load({
         kind: 'string',
       },
       {
-        key: 'personaText',
-        default: '',
-        kind: 'string',
+        key: 'personaCustoms',
+        default: [],
+        kind: 'array',
       },
     ];
 
@@ -140,6 +170,19 @@ window.__ModuleLoader__.load({
       fontFamily: 'inherit',
       outline: 'none',
     };
+    const inputStyle = {
+      width: '100%',
+      boxSizing: 'border-box',
+      padding: '7px 10px',
+      borderRadius: '8px',
+      border: '1px solid ' + COLORS.line,
+      background: 'rgba(255,255,255,.04)',
+      color: COLORS.label,
+      fontSize: '13px',
+      lineHeight: '20px',
+      fontFamily: 'inherit',
+      outline: 'none',
+    };
 
     /** 读取 Host 的完整 settings 文档。 */
     async function describeAll() {
@@ -168,8 +211,28 @@ window.__ModuleLoader__.load({
       }
       if (typeof DEFAULTS[field] === 'string') {
         if (typeof value !== 'string') return DEFAULTS[field];
-        if (field === 'personaPreset' && !PRESET_IDS.includes(value)) return DEFAULTS[field];
+        if (field === 'personaPreset') {
+          if (value === 'simple') return value;
+          if (value.startsWith('custom:')) {
+            const id = value.slice('custom:'.length);
+            const items = row && row.value && Array.isArray(row.value.personaCustoms)
+              ? row.value.personaCustoms
+              : [];
+            if (items.some((item) => item && item.id === id)) return value;
+          }
+          return 'standard';
+        }
         return value;
+      }
+      if (Array.isArray(DEFAULTS[field])) {
+        if (!Array.isArray(value)) return DEFAULTS[field];
+        return value
+          .filter((item) => item && typeof item === 'object')
+          .map((item) => ({
+            id: typeof item.id === 'string' ? item.id : '',
+            name: typeof item.name === 'string' ? item.name : '',
+            text: typeof item.text === 'string' ? item.text : '',
+          }));
       }
       return value === undefined ? DEFAULTS[field] : value;
     }
@@ -196,6 +259,27 @@ window.__ModuleLoader__.load({
       const chars = String(text || '').length;
       if (chars === 0) return '未填写';
       return `约 ${Math.max(1, Math.round(chars * 0.7))}–${chars} token`;
+    }
+
+    /** 自定义人设的本地 id；只用于区分草稿卡片，不需要全局唯一。 */
+    function createCustomId() {
+      return 'p' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    }
+
+    /** 卡片里的前 3 行预览。 */
+    function previewText(text) {
+      const value = String(text || '');
+      if (!value.trim()) return '';
+      const lines = value.split(/\r?\n/);
+      return lines.slice(0, 3).join('\n') + (lines.length > 3 ? '…' : '');
+    }
+
+    /** 深比较数组（自定义人设是对象数组，直接 === 会永远判定为已改动）。 */
+    function sameValue(left, right) {
+      if (Array.isArray(left) || Array.isArray(right)) {
+        return JSON.stringify(left) === JSON.stringify(right);
+      }
+      return left === right;
     }
 
     function BackLink(props) {
@@ -239,7 +323,20 @@ window.__ModuleLoader__.load({
     }
 
     function PersonaCard(props) {
-      const { title, description, token, selected, disabled, preview, onSelect, onEdit } = props;
+      const { title, description, token, selected, disabled, preview, onSelect, onEdit, onCopy, onDelete } = props;
+      const action = (label, handler, color) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            onClick: (event) => {
+              event.stopPropagation();
+              handler();
+            },
+            style: { ...ghostStyle, color: color || COLORS.dim },
+          },
+          label,
+        );
       return h(
         'div',
         {
@@ -305,20 +402,13 @@ window.__ModuleLoader__.load({
               preview,
             )
           : null,
-        onEdit
-          ? h(
-              'button',
-              {
-                type: 'button',
-                onClick: (event) => {
-                  event.stopPropagation();
-                  onEdit();
-                },
-                style: { ...ghostStyle, alignSelf: 'flex-start', marginTop: '2px' },
-              },
-              '编辑',
-            )
-          : null,
+        h(
+          'div',
+          { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '2px' } },
+          onEdit ? action('编辑', onEdit) : null,
+          onCopy ? action('复制', onCopy) : null,
+          onDelete ? action('删除', onDelete, COLORS.danger) : null,
+        ),
       );
     }
 
@@ -330,11 +420,13 @@ window.__ModuleLoader__.load({
       const [message, setMessage] = React.useState(null);
       const [tab, setTab] = React.useState('logging');
       const [personaView, setPersonaView] = React.useState('cards');
+      const [editingId, setEditingId] = React.useState(null);
 
       const load = React.useCallback(async () => {
         setState({ status: 'loading', error: null, row: null, namespaces: [] });
         setMessage(null);
         setPersonaView('cards');
+        setEditingId(null);
         try {
           const view = await describeAll();
           const row = findRow(view);
@@ -369,32 +461,102 @@ window.__ModuleLoader__.load({
         setDraft((current) => ({ ...current, [field]: !current[field] }));
       };
 
+      const customItems = () => (draft && Array.isArray(draft.personaCustoms) ? draft.personaCustoms : []);
+
       const selectPreset = (preset) => {
         setDraft((current) => ({ ...current, personaPreset: preset }));
-        if (preset === 'custom' && !String((draft && draft.personaText) || '').trim()) {
-          setPersonaView('edit');
+        if (String(preset).startsWith('custom:')) {
+          const id = preset.slice('custom:'.length);
+          const item = customItems().find((entry) => entry.id === id);
+          if (!item || !String(item.text || '').trim()) {
+            setEditingId(id);
+            setPersonaView('edit');
+          }
         }
       };
 
-      const editCustom = () => {
-        setDraft((current) => ({ ...current, personaPreset: 'custom' }));
+      const editCustom = (id) => {
+        setEditingId(id);
         setPersonaView('edit');
+      };
+
+      const updateCustom = (id, patch) => {
+        setDraft((current) => ({
+          ...current,
+          personaCustoms: (current.personaCustoms || []).map((item) =>
+            item.id === id ? { ...item, ...patch } : item,
+          ),
+        }));
+      };
+
+      const addCustom = () => {
+        const id = createCustomId();
+        setDraft((current) => ({
+          ...current,
+          personaCustoms: [...(current.personaCustoms || []), { id, name: '自定义人设', text: '' }],
+          personaPreset: 'custom:' + id,
+        }));
+        setEditingId(id);
+        setPersonaView('edit');
+      };
+
+      const copyPreset = (preset) => {
+        const items = customItems();
+        const customId = String(preset).startsWith('custom:') ? preset.slice('custom:'.length) : null;
+        const custom = customId ? items.find((entry) => entry.id === customId) : null;
+        const source =
+          custom
+            ? { name: custom.name || '自定义人设', text: custom.text || '' }
+            : preset === 'simple'
+              ? { name: '精简版', text: PRESET_TEXTS.simple }
+              : { name: '标准版', text: PRESET_TEXTS.standard };
+        const id = createCustomId();
+        setDraft((current) => ({
+          ...current,
+          personaCustoms: [
+            ...(current.personaCustoms || []),
+            { id, name: source.name + '（副本）', text: source.text },
+          ],
+          personaPreset: 'custom:' + id,
+        }));
+        if (!source.text.trim()) {
+          setEditingId(id);
+          setPersonaView('edit');
+        }
+        setMessage(`已复制「${source.name}」，记得点保存。`);
+      };
+
+      const deleteCustom = (id) => {
+        const remaining = customItems().filter((item) => item.id !== id);
+        const nextPreset =
+          draft.personaPreset === 'custom:' + id ? 'standard' : draft.personaPreset;
+        setDraft((current) => ({ ...current, personaCustoms: remaining, personaPreset: nextPreset }));
+        if (editingId === id) {
+          setEditingId(null);
+          setPersonaView('cards');
+        }
       };
 
       const save = async () => {
         if (!state.row || !draft) return;
-        if (draft.personaPreset === 'custom' && !String(draft.personaText || '').trim()) {
-          setTab('persona');
-          setPersonaView('edit');
-          setMessage('自定义人设不能为空：请填写文本，或换一个预设。');
-          return;
+        const selected = String(draft.personaPreset || '');
+        if (selected.startsWith('custom:')) {
+          const id = selected.slice('custom:'.length);
+          const item = (draft.personaCustoms || []).find((entry) => entry.id === id);
+          if (!item || !String(item.text || '').trim()) {
+            setTab('persona');
+            setEditingId(id);
+            setPersonaView('edit');
+            setMessage('自定义人设不能为空：请填写文本，或换一个预设。');
+            return;
+          }
         }
         const ops = [];
         for (const field of FIELDS) {
-          if (draft[field.key] === effective(state.row, field.key)) continue;
+          if (sameValue(draft[field.key], effective(state.row, field.key))) continue;
           const current = state.row && state.row.value ? state.row.value[field.key] : undefined;
           // 改回默认值时删掉 patch 里的显式值，而不是写一个同值覆盖。
-          if (draft[field.key] === DEFAULTS[field.key] && current !== undefined && current !== DEFAULTS[field.key]) {
+          if (sameValue(draft[field.key], DEFAULTS[field.key]) && current !== undefined && !sameValue(current, DEFAULTS[field.key])) {
             ops.push({ op: 'unset', path: [field.key] });
           } else {
             ops.push({ op: 'set', path: [field.key], value: draft[field.key] });
@@ -436,6 +598,7 @@ window.__ModuleLoader__.load({
         for (const field of FIELDS) values[field.key] = effective(state.row, field.key);
         setDraft(values);
         setPersonaView('cards');
+        setEditingId(null);
         setMessage(null);
       };
 
@@ -465,14 +628,12 @@ window.__ModuleLoader__.load({
       }
 
       const row = state.row;
-      const changed = FIELDS.some((field) => draft[field.key] !== effective(row, field.key));
+      const changed = FIELDS.some((field) => !sameValue(draft[field.key], effective(row, field.key)));
       const readonly = row && row.writable === false;
-      const customText = String(draft.personaText || '');
-      const customLines = customText.split(/\r?\n/);
-      const preview =
-        customText.trim().length > 0
-          ? customLines.slice(0, 3).join('\n') + (customLines.length > 3 ? '…' : '')
-          : '';
+      const customs = Array.isArray(draft.personaCustoms) ? draft.personaCustoms : [];
+      const selectedPreset = String(draft.personaPreset || 'standard');
+      const editingCustom = editingId ? customs.find((item) => item.id === editingId) : null;
+      const customText = editingCustom ? String(editingCustom.text || '') : '';
       const presets = [
         {
           id: 'standard',
@@ -486,14 +647,17 @@ window.__ModuleLoader__.load({
           description: '更短，只保留身份与称呼，语气更克制。',
           token: '约 120–165 token',
         },
-        {
-          id: 'custom',
-          title: '自定义',
-          description: customText.trim() ? '自己写一段，按原文注入系统提示。' : '尚未填写，点击进入编辑。',
-          token: tokenRange(customText),
-          preview,
+        ...customs.map((item) => ({
+          id: 'custom:' + item.id,
+          title: item.name || '自定义人设',
+          description: String(item.text || '').trim()
+            ? '自定义人设，点击卡片选用。'
+            : '尚未填写，点击进入编辑。',
+          token: tokenRange(item.text),
+          preview: previewText(item.text),
           editable: true,
-        },
+          customId: item.id,
+        })),
       ];
       const messageTone =
         message && (message.includes('失败') || message.includes('不能为空'))
@@ -563,32 +727,47 @@ window.__ModuleLoader__.load({
                   { type: 'button', onClick: () => setPersonaView('cards'), style: { ...ghostStyle, marginBottom: '10px' } },
                   '← 返回人设列表',
                 ),
-                h('div', { style: { ...titleStyle, fontSize: '14px', fontWeight: '600' } }, '自定义人设'),
-                h('div', { style: descStyle }, '纯文本，保留换行，不渲染 Markdown。最多 2000 字符。'),
-                h('textarea', {
-                  value: customText,
-                  maxLength: CUSTOM_TEXT_LIMIT,
-                  disabled: saving || readonly,
-                  onChange: (event) => setDraft((current) => ({ ...current, personaText: event.target.value })),
-                  style: textareaStyle,
-                }),
-                h(
-                  'div',
-                  { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginTop: '6px' } },
-                  h('span', { style: descStyle }, `${customText.length}/${CUSTOM_TEXT_LIMIT}`),
-                  customText.length > CUSTOM_TEXT_WARN
-                    ? h('span', { style: { ...descStyle, color: COLORS.warn } }, '超过 1000 字符，token 成本会明显增加。')
-                    : null,
-                ),
-                h(
-                  'div',
-                  { style: { marginTop: '10px' } },
-                  h(
-                    'button',
-                    { type: 'button', onClick: () => setPersonaView('cards'), style: buttonStyle },
-                    '完成',
-                  ),
-                ),
+                editingCustom
+                  ? h(
+                      'div',
+                      null,
+                      h('div', { style: { ...titleStyle, fontSize: '14px', fontWeight: '600' } }, '编辑自定义人设'),
+                      h('div', { style: descStyle }, '纯文本，保留换行，不渲染 Markdown。最多 2000 字符。'),
+                      h('div', { style: { ...descStyle, marginTop: '10px', marginBottom: '4px' } }, '名称'),
+                      h('input', {
+                        value: editingCustom.name,
+                        maxLength: 60,
+                        disabled: saving || readonly,
+                        onChange: (event) => updateCustom(editingCustom.id, { name: event.target.value }),
+                        style: inputStyle,
+                      }),
+                      h('div', { style: { ...descStyle, marginTop: '10px', marginBottom: '4px' } }, '正文'),
+                      h('textarea', {
+                        value: customText,
+                        maxLength: CUSTOM_TEXT_LIMIT,
+                        disabled: saving || readonly,
+                        onChange: (event) => updateCustom(editingCustom.id, { text: event.target.value }),
+                        style: textareaStyle,
+                      }),
+                      h(
+                        'div',
+                        { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginTop: '6px' } },
+                        h('span', { style: descStyle }, `${customText.length}/${CUSTOM_TEXT_LIMIT}`),
+                        customText.length > CUSTOM_TEXT_WARN
+                          ? h('span', { style: { ...descStyle, color: COLORS.warn } }, '超过 1000 字符，token 成本会明显增加。')
+                          : null,
+                      ),
+                      h(
+                        'div',
+                        { style: { marginTop: '10px' } },
+                        h(
+                          'button',
+                          { type: 'button', onClick: () => setPersonaView('cards'), style: buttonStyle },
+                          '完成',
+                        ),
+                      ),
+                    )
+                  : h('div', { style: descStyle }, '没有找到这张自定义人设卡，请返回列表重试。'),
               )
             : h(
                 'div',
@@ -633,12 +812,44 @@ window.__ModuleLoader__.load({
                       title: preset.title,
                       description: preset.description,
                       token: preset.token,
-                      selected: draft.personaPreset === preset.id,
+                      selected: selectedPreset === preset.id,
                       disabled: saving || readonly,
                       preview: preset.preview,
                       onSelect: () => selectPreset(preset.id),
-                      onEdit: preset.editable ? editCustom : undefined,
+                      onEdit: preset.editable ? () => editCustom(preset.customId) : undefined,
+                      onCopy: () => copyPreset(preset.id),
+                      onDelete: preset.editable ? () => deleteCustom(preset.customId) : undefined,
                     }),
+                  ),
+                  h(
+                    'div',
+                    {
+                      role: 'button',
+                      tabIndex: saving || readonly ? -1 : 0,
+                      onClick: saving || readonly ? undefined : addCustom,
+                      onKeyDown: (event) => {
+                        if (saving || readonly) return;
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          addCustom();
+                        }
+                      },
+                      style: {
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '2px',
+                        minHeight: '122px',
+                        padding: '12px',
+                        borderRadius: '10px',
+                        border: '1px dashed ' + COLORS.line,
+                        color: COLORS.dim,
+                        cursor: saving || readonly ? 'not-allowed' : 'pointer',
+                      },
+                    },
+                    h('span', { style: { fontSize: '26px', lineHeight: '30px', fontWeight: '300' } }, '+'),
+                    h('span', { style: { fontSize: '12px' } }, '自定义'),
                   ),
                 ),
               ),

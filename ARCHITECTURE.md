@@ -7,11 +7,11 @@
 ```
 dsh-annals/
 ├── lib/
-│   ├── index.js        2892 行 · 插件主体：注册、状态机、提醒引擎、路径判定
+│   ├── index.js        2915 行 · 插件主体：注册、状态机、提醒引擎、路径判定
 │   ├── query.js         604 行 · 检索算法，纯函数、不碰 ctx、可单测
 │   └── links.js         892 行 · 双向链接：解析反引号引用、建索引、出链入链
 ├── client/
-│   └── client.js       设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
+│   └── client.js       916 行 · 设置面板的「annals设置」页（web 端 client 半，含日志/人设两个 tab）
 ├── assets/
 │   ├── annals.md      341 行 · annals 技能的正文，运行时注册进技能系统
 │   ├── persona.md     小鲸鱼人设（标准版），`persona: true` 时作为独立 section 注入
@@ -20,7 +20,7 @@ dsh-annals/
 │   ├── log-parse.mjs    生成器的解析模块，同样复制进工作区
 │   └── gitattributes    复制成 日志\.gitattributes
 ├── test/
-│   ├── offline.mjs      2677 行 · 121 个离线用例（另有 2 个 skip）
+│   ├── offline.mjs      2718 行 · 122 个离线用例（另有 2 个 skip）
 │   ├── build-index.test.mjs  927 行 · 77 个生成器端到端用例
 │   ├── links.test.mjs        855 行 · 75 个双向链接用例
 │   ├── version.test.mjs       82 行 · 6 个版本号与打包清单一致性用例
@@ -448,7 +448,7 @@ export const Config = z.object({
 
 **为什么全带 `.volatile()`**：`dsh-settings` 的表单投影只收 volatile 字段（`volatileForm`，`dsh-settings\lib\index.js:122-131`），普通字段不会出现在 `settings.describe()` 的命名空间里 —— 那样 GUI 页就拿不到它们。
 
-**代价**：Loader 校验后的配置值不是 boolean，而是 cosmokit 的**运行时引用对象**（`{ get(), [cosmokit.volatile.write] }`，`cosmokit\lib\index.js:102-110`）。所以插件内部必须统一用 `readFlag()` 解包：
+**代价**：Loader 校验后的配置值不是 boolean，而是 cosmokit 的**运行时引用对象**（`{ get(), [cosmokit.volatile.write] }`，`cosmokit\lib\index.js:102-110`）。所以插件内部必须统一用 `readFlag()` / `readString()` / `readArray()` 解包：
 
 ```js
 export function readFlag(config, field, fallback = true) {
@@ -463,15 +463,15 @@ export function readFlag(config, field, fallback = true) {
 
 ### GUI 只渲染 5 个
 
-`client/client.js` 的 `FIELDS` 有 `enabled`、`probe`、`persona`、`personaPreset`、`personaText`。其余八个字段（`skill` / `section` / `reminder` / `envReminder` / `initTool` / `skipSubagents` / `queryTool` / `linksTool`）只能改 `cordis.patch.yml`。
+`client/client.js` 的 `FIELDS` 有 `enabled`、`probe`、`persona`、`personaPreset`、`personaCustoms`。其余八个字段（`skill` / `section` / `reminder` / `envReminder` / `initTool` / `skipSubagents` / `queryTool` / `linksTool`）只能改 `cordis.patch.yml`。
 
-这是有意的：前六个是日志系统的基础行为，少一个插件就不完整，不该让用户以为「每个都该调」；`queryTool` / `linksTool` 是工具注册开关，同属基础能力。GUI 上摆太多开关，只会制造「关了也能用」的错觉。
+这是有意的：前五个是日志系统与人设的基础行为，少一个插件就不完整，不该让用户以为「每个都该调」；`queryTool` / `linksTool` 是工具注册开关，同属基础能力。GUI 上摆太多开关，只会制造「关了也能用」的错觉。
 
 ### 设置页：单入口 + 页内 tab
 
 设置导航只注册一个 `settings.section`（id `annals-settings`、label `annals设置`、order 55）。`settings.section` 本身是 list slot，多条目会变成多个侧栏入口；这里刻意不拆成两个入口，而是在 `AnnalsPage` 内用本地 `tab` state 切「日志设置 / 人设」，避免同一个插件在侧栏出现两次。人设 tab 内再用 `personaView` state 在卡片列表与自定义编辑视图之间切换，没有引入嵌套路由。
 
-`persona` 开关放在人设 tab 顶部而不是日志 tab；关闭时仍允许编辑，只显示「当前不会注入」横幅。`personaPreset` 与 `personaText` 仍走同一个 `annals` 命名空间，保存时统一 `api.mutate`。
+`persona` 开关放在人设 tab 顶部而不是日志 tab；关闭时仍允许编辑，只显示「当前不会注入」横幅。`personaPreset` 与 `personaCustoms` 仍走同一个 `annals` 命名空间，保存时统一 `api.mutate`。
 
 ### GUI 的写路径
 
@@ -489,17 +489,17 @@ export function readFlag(config, field, fallback = true) {
 
 ## 测试策略
 
-五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **280 项**（278 pass / 2 skip）。
+五套测试，全部离线，不需要 DSH 宿主。`pnpm test` 一条命令跑完，合计 **281 项**（279 pass / 2 skip）。
 
 | 文件 | 用例数 | 覆盖 |
 |---|---|---|
-| `test/offline.mjs` | **121**（另 2 个 skip） | 见下 |
+| `test/offline.mjs` | **122**（另 2 个 skip） | 见下 |
 | `test/build-index.test.mjs` | **77** | 生成器端到端（真实临时目录 + 真实子进程） |
 | `test/links.test.mjs` | **75** | 双向链接（纯函数 + 临时工作区夹具） |
 | `test/version.test.mjs` | **6** | 版本号一致性与打包清单（见下） |
 | `test/e2e-sandbox.test.mjs` | **1** | 包装 `e2e-sandbox.mjs`：真实磁盘初始化全流程 |
 
-`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 121 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\annals-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
+`pnpm test` 的 `scripts.test` 是**显式列出五个文件**，不是 glob。原因有两个：`offline.mjs` 不带 `.test` 后缀，`test/*.test.mjs` 匹配不到它，那 122 个用例会**静默地一条都不跑**；而 `node --test` 无参数时的默认发现规则又会把 `test/` 下所有 `.mjs` 都当测试文件执行，包括 `e2e-sandbox.mjs` —— 它是个独立脚本，被直接执行时目标目录是 `%TEMP%\annals-e2e-<pid>` 且不自删，每跑一次留一个垃圾目录。两个坑都只在「换个跑法」时才暴露，所以这里写死文件名。
 
 ### version.test.mjs：为什么需要它
 

@@ -172,8 +172,8 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 | `enabled` | `true` | 总开关 | ✅ |
 | `probe` | `false` | 检索记录：把每次 AI 调用插件检索工具记到 `日志\annals-probe.jsonl`，默认关闭 | ✅ |
 | `persona` | `false` | 小鲸鱼人设总开关；关闭时任何预设都不注入（默认关闭） | ✅ |
-| `personaPreset` | `standard` | 人设预设：`standard` / `simple` / `custom`；`persona: true` 时生效 | ✅ |
-| `personaText` | `''` | `custom` 预设的自定义文本，最多 2000 字符；为空时回退标准版 | ✅ |
+| `personaPreset` | `standard` | 人设预设：`standard` / `simple` / `custom:<id>`；`persona: true` 时生效 | ✅ |
+| `personaCustoms` | `[]` | 自定义人设数组，每项 `{ id, name, text }`；`text` 最多 2000 字符，列表可放多张 | ✅ |
 | `skill` | `true` | 注册 `annals` 技能 | ❌ 只能改 YAML |
 | `section` | `true` | 注入常驻日志规矩 | ❌ 只能改 YAML |
 | `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ❌ 只能改 YAML |
@@ -185,9 +185,9 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 ### 人设页
 
-人设页把三份文本做成卡片：**标准版**（436 字符）、**精简版**（165 字符）、**自定义**。卡片显示名称、1–2 行描述和约 token；自定义卡片额外显示前 3 行预览和「编辑」按钮。
+人设页把**标准版**（436 字符）、**精简版**（165 字符）和任意多张**自定义**人设做成卡片。卡片显示名称、1–2 行描述和约 token；每张卡都有「复制」按钮，点击会基于该卡原文新建一张自定义卡，方便改出自己的版本。自定义卡额外显示前 3 行预览，并提供「编辑」「删除」；列表末尾的虚线「+ 自定义」卡用于从零新建。
 
-`persona` 是唯一总开关，关掉后不论选哪个预设都不注入；`personaPreset` 只决定 `persona: true` 时用哪份文本。标准版/精简版是插件自带的静态资源；自定义文本存在 profile 的 `annals` 设置里，纯文本、保留换行、不渲染 Markdown，最多 2000 字符，超过 1000 字符会显示 token 成本提示。卡片选择和文本编辑都只改本地草稿，点「保存」才写入 profile；点「放弃改动」回滚。
+`persona` 是唯一总开关，关掉后不论选哪个预设都不注入；`personaPreset` 只决定 `persona: true` 时用哪份文本（自定义项写成 `custom:<id>`，在 `personaCustoms` 里查找）。标准版/精简版是插件自带的静态资源；自定义文本存在 profile 的 `annals` 设置里，纯文本、保留换行、不渲染 Markdown，最多 2000 字符，超过 1000 字符会显示 token 成本提示。卡片选择、复制、编辑、删除都只改本地草稿，点「保存」才写入 profile；点「放弃改动」回滚。
 
 没有 GUI（headless / 非 web profile）时，直接在 `cordis.patch.yml` 里 override `annals` 的 config：
 
@@ -199,7 +199,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 改 YAML 后**需要重启 DSH**。
 
-> **实现细节（改代码才会撞上）**：十三个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean/string，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 或 `readString(config, '字段')` 解包，不能直接读 `config.字段`。
+> **实现细节（改代码才会撞上）**：十三个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean/string，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')`、`readString(config, '字段')` 或 `readArray(config, '字段')` 解包，不能直接读 `config.字段`。
 
 ## 卸载
 
@@ -212,7 +212,7 @@ dsh plugin --profile web remove dsh-annals
 ## 测试
 
 ```powershell
-pnpm test    # 一条命令跑完全部 280 个用例
+pnpm test    # 一条命令跑完全部 281 个用例
 ```
 
 全部离线运行，不需要 DSH 宿主。五套各测什么、各自的覆盖与已知跳过项，见 [ARCHITECTURE.md](ARCHITECTURE.md#测试策略)。
