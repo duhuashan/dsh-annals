@@ -132,7 +132,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 |---|---|---|
 | `annals` 技能 | 写日志的完整规矩（该不该写、写多细、怎么排版、写完做什么） | 模型要写日志时自动加载 |
 | 常驻规矩 | 一段精简版日志规矩，**每轮**都在系统提示里 | 防止「模型没加载技能就忘了要记」 |
-| 小鲸鱼人设 | 标准版语气提示，默认关闭，设置页可开 | 想让每轮对话多一点趣味时 |
+| 小鲸鱼人设 | 标准版/精简版/自定义三种语气提示，默认关闭，设置页可开 | 想让每轮对话多一点趣味时 |
 | 轮次提醒 | 轮次收尾时判断这一轮改了文件却没写日志 | 提醒本身不占你注意力，只在它漏记时出现 |
 | 环境变更提醒 | 判断这一轮装/卸了插件、改了 DSH 配置却没写日志 | 这类写入在工作区外，普通「改了文件」提醒覆盖不到 |
 | 索引新鲜度提醒 | 判断日志写了但索引没重新生成 | 防「写了日志就以为完事」—— 索引不跑，检索永远停在旧快照 |
@@ -159,19 +159,21 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 ## 配置
 
-插件带一个 GUI 开关页：**设置面板 → 日志系统**。
+插件带一个 GUI 设置页：**设置面板 → annals设置**，页内分两个 tab：**日志设置**、**人设**。
 
-三个开关读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**立即生效，不需要重启**。
+两个 tab 都读写 Host 的 `annals` 设置命名空间；保存后写进 profile 的 `cordis.patch.yml` config 段，热重载条目，**下一次请求生效，不需要重启**。
 
 > 插件页卡片（「插件」→ dsh-annals）不渲染配置表单 —— 那是 DSH 的既有行为：插件页只显示包信息与运行状态，配置表单由功能包自己注册设置页。
 
-### 十一个字段，三个在 GUI 里
+### 十三个字段，五个在 GUI 里
 
 | 字段 | 默认 | 含义 | GUI |
 |---|---|---|---|
 | `enabled` | `true` | 总开关 | ✅ |
 | `probe` | `false` | 检索记录：把每次 AI 调用插件检索工具记到 `日志\annals-probe.jsonl`，默认关闭 | ✅ |
-| `persona` | `false` | 注入标准版「小鲸鱼」人设（自称我/小鲸鱼/本鲸，称你为老大，偶尔感慨） | ✅ |
+| `persona` | `false` | 小鲸鱼人设总开关；关闭时任何预设都不注入（默认关闭） | ✅ |
+| `personaPreset` | `standard` | 人设预设：`standard` / `simple` / `custom`；`persona: true` 时生效 | ✅ |
+| `personaText` | `''` | `custom` 预设的自定义文本，最多 2000 字符；为空时回退标准版 | ✅ |
 | `skill` | `true` | 注册 `annals` 技能 | ❌ 只能改 YAML |
 | `section` | `true` | 注入常驻日志规矩 | ❌ 只能改 YAML |
 | `reminder` | `true` | 轮次收尾提醒（含索引新鲜度提醒） | ❌ 只能改 YAML |
@@ -180,6 +182,12 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 | `skipSubagents` | `true` | 子代理会话不提醒 | ❌ 只能改 YAML |
 | `queryTool` | `true` | 注册 `annals_query` 工具 | ❌ 只能改 YAML |
 | `linksTool` | `true` | 注册 `annals_links` 工具 | ❌ 只能改 YAML |
+
+### 人设页
+
+人设页把三份文本做成卡片：**标准版**（436 字符）、**精简版**（165 字符）、**自定义**。卡片显示名称、1–2 行描述和约 token；自定义卡片额外显示前 3 行预览和「编辑」按钮。
+
+`persona` 是唯一总开关，关掉后不论选哪个预设都不注入；`personaPreset` 只决定 `persona: true` 时用哪份文本。标准版/精简版是插件自带的静态资源；自定义文本存在 profile 的 `annals` 设置里，纯文本、保留换行、不渲染 Markdown，最多 2000 字符，超过 1000 字符会显示 token 成本提示。卡片选择和文本编辑都只改本地草稿，点「保存」才写入 profile；点「放弃改动」回滚。
 
 没有 GUI（headless / 非 web profile）时，直接在 `cordis.patch.yml` 里 override `annals` 的 config：
 
@@ -191,7 +199,7 @@ dsh plugin --profile web add link:C:/path/to/dsh-annals
 
 改 YAML 后**需要重启 DSH**。
 
-> **实现细节（改代码才会撞上）**：十一个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 解包，不能直接读 `config.字段`。
+> **实现细节（改代码才会撞上）**：十三个字段在 schema 里都带 `.volatile()` —— `dsh-settings` 的表单投影只收 volatile 字段，普通字段不会出现在 `settings.describe()` 里。代价是 Loader 校验后的配置值不是 boolean/string，而是 cosmokit 的运行时引用对象；插件内部统一用 `readFlag(config, '字段')` 或 `readString(config, '字段')` 解包，不能直接读 `config.字段`。
 
 ## 卸载
 
@@ -204,7 +212,7 @@ dsh plugin --profile web remove dsh-annals
 ## 测试
 
 ```powershell
-pnpm test    # 一条命令跑完全部 275 个用例
+pnpm test    # 一条命令跑完全部 280 个用例
 ```
 
 全部离线运行，不需要 DSH 宿主。五套各测什么、各自的覆盖与已知跳过项，见 [ARCHITECTURE.md](ARCHITECTURE.md#测试策略)。

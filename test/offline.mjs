@@ -21,6 +21,8 @@ import {
   resolveWorkspacePolicy,
   initWorkspace,
   readFlag,
+  readString,
+  resolvePersonaText,
   isIndexStale,
   looksLikeShellWrite,
   isEnvMutation,
@@ -207,7 +209,7 @@ test('Config：导出 Standard Schema，validate 填充默认值', () => {
   assert.equal(Config['~standard'].vendor, 'schemastery');
 
   // 这些字段必须都是 volatile，否则 settings.describe() 里不会出现 annals 命名空间。
-  for (const field of ['enabled', 'skill', 'section', 'persona', 'reminder', 'initTool', 'skipSubagents']) {
+  for (const field of ['enabled', 'skill', 'section', 'persona', 'personaPreset', 'personaText', 'reminder', 'initTool', 'skipSubagents']) {
     assert.equal(Config.dict[field].meta.volatile, true, field + ' 应为 volatile');
   }
 
@@ -220,11 +222,31 @@ test('Config：导出 Standard Schema，validate 填充默认值', () => {
   }
   assert.equal(typeof defaults.value.persona.get, 'function', 'persona 应是引用对象');
   assert.equal(defaults.value.persona.get(), false, 'persona 默认应为 false');
+  assert.equal(defaults.value.personaPreset.get(), 'standard', 'personaPreset 默认应为 standard');
+  assert.equal(defaults.value.personaText.get(), '', 'personaText 默认应为空');
 
-  const custom = Config['~standard'].validate({ reminder: false, persona: true });
+  const custom = Config['~standard'].validate({ reminder: false, persona: true, personaPreset: 'custom', personaText: '你好' });
   assert.equal(custom.value.reminder.get(), false);
   assert.equal(custom.value.enabled.get(), true);
   assert.equal(custom.value.persona.get(), true);
+  assert.equal(custom.value.personaPreset.get(), 'custom');
+  assert.equal(custom.value.personaText.get(), '你好');
+});
+
+test('readString：解包 volatile 引用、缺省空串、非字符串回退', () => {
+  assert.equal(readString(undefined, 'personaPreset', 'standard'), 'standard');
+  assert.equal(readString({}, 'personaPreset', 'standard'), 'standard');
+  assert.equal(readString({ personaPreset: 'simple' }, 'personaPreset'), 'simple');
+  assert.equal(readString({ personaPreset: { get: () => 'custom' } }, 'personaPreset'), 'custom');
+  assert.equal(readString({ personaPreset: 42 }, 'personaPreset', 'standard'), 'standard');
+});
+
+test('resolvePersonaText：standard / simple / custom / 空自定义兜底', () => {
+  assert.match(resolvePersonaText({}), /小鲸鱼/);
+  assert.match(resolvePersonaText({ personaPreset: 'standard' }), /小鲸鱼/);
+  assert.match(resolvePersonaText({ personaPreset: 'simple' }), /工作小助手/);
+  assert.equal(resolvePersonaText({ personaPreset: 'custom', personaText: '自定义正文' }), '自定义正文');
+  assert.match(resolvePersonaText({ personaPreset: 'custom', personaText: '   ' }), /小鲸鱼/);
 });
 
 test('readFlag：解包 volatile 引用、缺省 true、显式 false 才算关', () => {
@@ -430,9 +452,35 @@ test('apply persona=true 注册独立的人设 section', (t) => {
   const persona = ctx.registered.sections.find((x) => x.name === 'annals-persona');
   assert.ok(persona, '开启 persona 后应注册 annals-persona section');
   assert.equal(persona.order, 100, '人设 section 应在 PERSONA_PREFIX(0) 与日志规矩(150) 之间');
-  assert.match(persona.text, /小鲸鱼/);
-  assert.match(persona.text, /老大/);
-  assert.match(persona.text, /不改变结论/);
+  assert.equal(typeof persona.text, 'function', '人设文本应延迟到 assemble 时解析，支持切换预设');
+  assert.match(persona.text(), /小鲸鱼/);
+  assert.match(persona.text(), /老大/);
+  assert.match(persona.text(), /不改变结论/);
+});
+
+test('apply personaPreset 切换 standard / simple / custom', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  apply(ctx, { persona: true, personaPreset: 'simple' });
+  const simple = ctx.registered.sections.find((x) => x.name === 'annals-persona');
+  assert.match(simple.text(), /工作小助手/);
+  assert.doesNotMatch(simple.text(), /蓝色大肥鱼/);
+
+  const customCtx = makeCtx(root);
+  apply(customCtx, { persona: true, personaPreset: 'custom', personaText: '你是自定义人设。' });
+  const custom = customCtx.registered.sections.find((x) => x.name === 'annals-persona');
+  assert.equal(custom.text(), '你是自定义人设。');
+});
+
+test('apply persona=false 时即使 personaPreset=custom 也不注入', (t) => {
+  const root = makeRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const ctx = makeCtx(root);
+  apply(ctx, { persona: false, personaPreset: 'custom', personaText: '不应出现' });
+
+  assert.equal(ctx.registered.sections.length, 1);
+  assert.equal(ctx.registered.sections[0].name, 'annals');
 });
 
 test('apply 配置开关能关掉每一项', (t) => {
