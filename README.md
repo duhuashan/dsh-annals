@@ -4,7 +4,7 @@
 
 给 AI 一份跨会话的记忆：每天一个日志文件、一份可检索的索引、一个独立的 git 仓库。
 
-> DSH（DeepSeek Harness）插件 | 版本 0.6.0 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
+> DSH（DeepSeek Harness）插件 | 版本 0.7.0 | [Releases](https://github.com/duhuashan/dsh-annals/releases)
 
 ## 为什么装它
 
@@ -42,7 +42,7 @@ AI 的每次会话都开在一张白纸上。上一轮敲定的方案、踩过�
 从 [Releases](https://github.com/duhuashan/dsh-annals/releases) 下载最新的 `dsh-annals-<版本>.tgz`，然后：
 
 ```powershell
-dsh plugin --profile web add C:\path\to\dsh-annals-0.6.0.tgz
+dsh plugin --profile web add C:\path\to\dsh-annals-0.7.0.tgz
 ```
 
 装完**重启 DSH** 生效。
